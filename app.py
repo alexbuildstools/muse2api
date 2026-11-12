@@ -345,11 +345,17 @@ def _renew_and_persist(acc_id: str, wake_vm: bool = True, force: bool = False) -
     )
     if not force and acc.get("ok") is True and (now - last_sync) < 600:
         engine._last_http_renew[acc_id] = last_sync
+        log.info("【会话】账号 %s (%s) 使用近 10 分钟内的续签结果", acc.get("label"), acc_id)
         return acc
     try:
+        log.info("【会话】账号 %s (%s) 开始调用 /api/session，wake_vm=%s force=%s",
+                 acc.get("label"), acc_id, wake_vm, force)
         res = engine.renew_session_http(acc["cookies"], acc.get("cookies_exp"), wake_vm=wake_vm,
                                         **({"proxy": _account_proxy(acc)} if _account_proxy(acc) else {}))
         engine._last_http_renew[acc_id] = now
+        log.info("【会话】账号 %s (%s) /api/session 返回 ok=%s vm_state=%s cookie_count=%s",
+                 acc.get("label"), acc_id, res.get("ok"), res.get("vm_state"),
+                 len(res.get("cookies") or {}))
         if res.get("cookies"):
             store.update_account(acc_id, cookies=res["cookies"],
                                  cookies_exp=res.get("cookies_exp"),
@@ -357,9 +363,13 @@ def _renew_and_persist(acc_id: str, wake_vm: bool = True, force: bool = False) -
                                  synced_at=int(now))
             store.touch_keepalive(acc_id, True, f"会话正常 (VM: {res.get('vm_state') or 'RUNNING'})")
     except MuseAuthError as exc:
+        log.warning("【会话失败】账号 %s (%s) 阶段=/api/session 认证 error=%s",
+                    acc.get("label"), acc_id, exc)
         store.mark(acc_id, False, str(exc))
         raise
-    except MuseProxyError:
+    except MuseProxyError as exc:
+        log.warning("【会话失败】账号 %s (%s) 阶段=/api/session 代理 error=%s",
+                    acc.get("label"), acc_id, exc)
         raise
     except Exception as exc:
         log.warning("HTTP 预续签账号 %s 异常: %s", acc_id, exc)
@@ -1108,7 +1118,7 @@ def _run_generation(prompt: str, kind: str, timeout: int,
                     account_id: str | None = None, on_progress=None,
                     reference_image: str | None = None,
                     reference_images: list[str] | None = None,
-                    on_acquired=None) -> tuple[dict, str | None]:
+                    on_acquired=None, on_account=None) -> tuple[dict, str | None]:
     # Browser ownership covers account selection, retry and cleanup, not just generate().
     deadline = time.monotonic() + max(1, timeout)
     if not GEN_LOCK.acquire(timeout=max(1, timeout)):
@@ -1121,7 +1131,7 @@ def _run_generation(prompt: str, kind: str, timeout: int,
                 pass
         return _run_generation_locked(prompt, kind, timeout, account_id,
                                       on_progress, reference_image, reference_images,
-                                      deadline=deadline)
+                                      deadline=deadline, on_account=on_account)
     finally:
         GEN_LOCK.release()
 
@@ -1130,12 +1140,15 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
                     account_id: str | None = None, on_progress=None,
                     reference_image: str | None = None,
                     reference_images: list[str] | None = None,
-                    deadline=None) -> tuple[dict, str | None]:
+                    deadline=None, on_account=None) -> tuple[dict, str | None]:
     remaining_wait = int(deadline - time.monotonic()) if deadline is not None else timeout
     acc = ACCOUNT_POOL.acquire(account_id=account_id,
                                preferred_id=None,
                                rotate=True,
                                timeout=max(1, remaining_wait))
+    if not acc:
+        log.warning("【生成】没有取得可用账号 kind=%s requested_account=%s", kind, account_id)
+        raise MuseGenerationError("没有可用账号，请先在管理页面导入 cookie")
     cur_acc = acc
     last_exc = None
     try:
@@ -1159,11 +1172,20 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
                     break
                 cur_acc = alt
                 log.info("【生图/视频自动切号】切换到备用账号 %s (%s) 重试...", cur_acc.get("label"), cur_acc["id"])
+            if on_account:
+                try:
+                    on_account(cur_acc)
+                except Exception:
+                    log.exception("【生成】记录账号绑定失败 account=%s", cur_acc.get("id"))
+            log.info("【生成】kind=%s attempt=%s 使用账号 %s (%s)，参考素材=%s",
+                     kind, attempt + 1, cur_acc.get("label"), cur_acc.get("id"),
+                     len(reference_images or []) + (1 if reference_image else 0))
             try:
                 _bind_account_proxy(cur_acc)
                 refreshed = _renew_and_persist(cur_acc["id"], wake_vm=True, force=(attempt > 0))
                 if refreshed:
                     cur_acc = refreshed
+                log.info("【生成】kind=%s account=%s 开始启动浏览器生成", kind, cur_acc.get("id"))
                 engine.start()
                 remaining = int(deadline - time.monotonic()) if deadline is not None else timeout
                 if remaining <= 0:
@@ -1178,19 +1200,27 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
                                       timeout=remaining, expires=cur_acc.get("cookies_exp"),
                                       account_id=cur_acc["id"], on_progress=on_progress,
                                       reference_image=reference_image, **engine_kwargs)
+                log.info("【生成】kind=%s account=%s 成功取回文件 filename=%s bytes=%s",
+                         kind, cur_acc.get("id"), res.get("filename"), res.get("size"))
                 store.mark(cur_acc["id"], True, "")
                 _sync_cookies(cur_acc["id"])
                 return res, cur_acc["id"]
             except MuseAuthError as exc:
                 last_exc = exc
+                log.warning("【生成失败】kind=%s account=%s 阶段=认证 error=%s",
+                            kind, cur_acc.get("id"), exc)
                 store.mark(cur_acc["id"], False, str(exc))
                 engine.close_current_page()
             except MuseProxyError as exc:
                 last_exc = exc
+                log.warning("【生成失败】kind=%s account=%s 阶段=代理 error=%s",
+                            kind, cur_acc.get("id"), exc)
                 store.touch_keepalive(cur_acc["id"], None, f"代理异常: {str(exc)[:160]}")
                 engine.close_current_page()
             except MuseGenerationError as exc:
                 last_exc = exc
+                log.warning("【生成失败】kind=%s account=%s 阶段=Muse/浏览器 error=%s",
+                            kind, cur_acc.get("id"), exc)
                 store.mark(cur_acc["id"], True, f"任务异常: {str(exc)[:60]}")
                 if _is_prompt_delivery_failure(exc):
                     log.warning(
@@ -1205,6 +1235,8 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
             except Exception as exc:  # noqa: BLE001
                 engine.close_current_page()
                 last_exc = MuseGenerationError(f"生成失败: {exc}")
+                log.exception("【生成失败】kind=%s account=%s 阶段=未分类异常",
+                              kind, cur_acc.get("id"))
         raise last_exc
     finally:
         if cur_acc:
@@ -1269,6 +1301,19 @@ def _prepare_reference_images(images: list[str]) -> list[str]:
     return prepared
 
 
+def _record_task_account(task_id: str, account: dict | None):
+    """Persist the account as soon as generation acquires it, including failures."""
+    if not account:
+        return
+    task = store.get_task(task_id) or {}
+    attempts = list(task.get("account_attempts") or [])
+    if not attempts or attempts[-1].get("id") != account.get("id"):
+        attempts.append({"id": account.get("id"), "label": account.get("label"),
+                         "at": int(time.time())})
+    store.update_task(task_id, account=account.get("id"),
+                      account_label=account.get("label"), account_attempts=attempts)
+
+
 def _queue_image(req: ImageRequest, prompt: str, reference_images: list[str],
                  idempotency_key: str | None = None):
     """Opt-in polling avoids reverse-proxy timeouts; no generation is repeated by polling."""
@@ -1310,14 +1355,19 @@ def _queue_image(req: ImageRequest, prompt: str, reference_images: list[str],
                 prompt, "image", req.timeout or CFG.image_timeout,
                 reference_images=reference_images,
                 on_progress=lambda p: store.update_task(tid, progress=p),
-                on_acquired=_on_acquired)
+                on_acquired=_on_acquired,
+                on_account=lambda account: _record_task_account(tid, account))
             # Store only media metadata, not large base64 payloads or reference credentials.
             store.update_task(tid, status="completed", progress=100, account=acc_id,
+                              account_label=(store.get_account(acc_id) or {}).get("label"),
                               elapsed=round(time.time() - timing["t0"], 1),
                               url=media_url(res["filename"]),
                               result={**{k: res[k] for k in ("filename", "size", "kind")},
                                       "url": media_url(res["filename"])})
         except Exception as exc:  # noqa: BLE001
+            log.warning("【任务失败】task=%s kind=image account=%s label=%s error=%s",
+                        tid, (store.get_task(tid) or {}).get("account"),
+                        (store.get_task(tid) or {}).get("account_label"), exc)
             store.update_task(tid, status="failed", error=str(exc),
                               elapsed=round(time.time() - timing["t0"], 1))
 
@@ -1489,9 +1539,11 @@ async def create_video(req: VideoRequest, _=Depends(auth)):
             def prog_cb(p):
                 store.update_task(task["id"], progress=p)
             res, acc_id = _run_generation(prompt, "video", timeout, on_progress=prog_cb,
-                                          reference_images=ref_images, on_acquired=_on_acquired)
+                                          reference_images=ref_images, on_acquired=_on_acquired,
+                                          on_account=lambda account: _record_task_account(task["id"], account))
             vurl = media_url(res["filename"])
             store.update_task(task["id"], status="completed", progress=100, account=acc_id,
+                              account_label=(store.get_account(acc_id) or {}).get("label"),
                               elapsed=round(time.time() - timing["t0"], 1),
                               url=vurl,
                               video={"url": vurl},
@@ -1499,6 +1551,9 @@ async def create_video(req: VideoRequest, _=Depends(auth)):
                                       "filename": res["filename"],
                                       "bytes": res["size"], "kind": res["kind"]})
         except Exception as exc:  # noqa: BLE001
+            log.warning("【任务失败】task=%s kind=video account=%s label=%s error=%s",
+                        task["id"], (store.get_task(task["id"]) or {}).get("account"),
+                        (store.get_task(task["id"]) or {}).get("account_label"), exc)
             store.update_task(task["id"], status="failed",
                               elapsed=round(time.time() - timing["t0"], 1), error=str(exc))
 

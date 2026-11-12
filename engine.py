@@ -1064,6 +1064,8 @@ class MuseEngine:
     )
 
     def _send(self, prompt: str):
+        log.info("【页面发送】开始填写提示词 chars=%s url=%s",
+                 len(prompt or ""), getattr(self.page, "url", ""))
         # 1. 确保 textarea 滚动到视口中央并获得真实焦点
         try:
             self.page.js("""(function(){
@@ -1136,6 +1138,7 @@ class MuseEngine:
                 except Exception:
                     pass
         time.sleep(0.3)
+        log.info("【页面发送】点击结果=%s chars=%s", clicked, len(prompt or ""))
         return clicked
 
     def _composer_unsent(self) -> str:
@@ -1194,6 +1197,7 @@ class MuseEngine:
         refusal_last, refusal_stable = "", 0
         seen_stop = False
         previous_state = None
+        logged_state = None
         last_activity = t_start
         progress_sent = 0
         resent = False
@@ -1281,6 +1285,13 @@ class MuseEngine:
             if previous_state is None or state != previous_state:
                 last_activity = time.time()
                 previous_state = state
+            # Do not log generated text or URLs; counts and lifecycle flags are
+            # enough to identify where delivery stopped without leaking prompts.
+            lifecycle = (cur_cnt, len(atts), has_stop, path)
+            if lifecycle != logged_state:
+                log.info("【等待成品】expect=%s agent_count=%s attachment_count=%s stop=%s path=%s",
+                         expect, cur_cnt, len(atts), has_stop, path)
+                logged_state = lifecycle
 
             if on_progress:
                 milestone = 25 if seen_stop else 20
@@ -1302,6 +1313,8 @@ class MuseEngine:
                     log.warning("提示词发出 %.0f 秒后仍在输入框（%s），补点一次发送", elapsed, unsent)
                     self._click_send()
                 elif unsent and elapsed > 60.0:
+                    log.warning("【等待成品失败】提示词仍在输入框 elapsed=%.1fs composer=%s",
+                                elapsed, unsent)
                     raise MuseGenerationError("提示词没有发出去（%s 仍在输入框里），终止等待并换号重试" % unsent)
 
             if re.search(r"额度不足|积分不足|out of credits|达到上限|token limit", tail, re.I):
@@ -1309,6 +1322,8 @@ class MuseEngine:
             # A Stop button is also shown for messages never acknowledged by the gateway.
             if elapsed > 30.0 and cur_cnt == base_agent_cnt and re.search(
                     r"Still sending|Delivery not confirmed|正在发送|未确认送达", tail, re.I):
+                log.warning("【等待成品失败】Muse 未确认提示词送达 elapsed=%.1fs agent_count=%s attachment_count=%s stop=%s path=%s",
+                            elapsed, cur_cnt, len(atts), has_stop, path)
                 raise MuseGenerationError(
                     "提示词未成功送达后端（Still sending / Delivery not confirmed），终止等待并重试")
 
@@ -1856,6 +1871,8 @@ class MuseEngine:
                  on_progress=None, reference_image: str | None = None,
                  reference_images: list[str] | None = None,
                  stop_event=None) -> dict:
+        log.info("【引擎】开始生成 expect=%s account=%s refs=%s timeout=%ss",
+                 expect, account_id, len(reference_images or ([] if not reference_image else [reference_image])), timeout)
         deadline = time.monotonic() + timeout
         self.ensure_page(cookies, expires, account_id=account_id)
         self.reset_thread(for_chat=False)
@@ -1880,7 +1897,9 @@ class MuseEngine:
         base_agent_cnt = self._agent_count()
         if time.monotonic() >= deadline:
             raise MuseGenerationError("任务准备超时，已停止发送")
-        if self._send(prompt) not in ("clicked", "enter-sent"):
+        send_result = self._send(prompt)
+        if send_result not in ("clicked", "enter-sent"):
+            log.warning("【引擎】提示词发送未确认 account=%s result=%s", self.current_acc_id, send_result)
             raise MuseGenerationError("提示词发送未确认，已停止生成")
         os.makedirs(self.cfg.media_dir, exist_ok=True)
         # 页面若把刚上传的素材渲染成"结果"，按哈希识别出来并继续等待真正的成品

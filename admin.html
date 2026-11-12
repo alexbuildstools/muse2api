@@ -358,7 +358,17 @@
           <h3 style="margin:0">账号列表 <span class="tag" id="poolCount">0</span></h3>
           <span class="badge ok" id="keepaliveBadge" style="font-size:11px">● 自动保活轮转中 (30m)</span>
         </div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <label for="poolSort" style="margin:0">排序</label>
+          <select id="poolSort" class="mini" style="width:auto;padding:5px 9px" onchange="changePoolSort(this.value)">
+            <option value="last_used">最后使用</option>
+            <option value="status">状态</option>
+            <option value="expires_at">有效期</option>
+            <option value="use_count">使用次数</option>
+            <option value="label">标签</option>
+            <option value="created_at">导入时间</option>
+          </select>
+          <button class="ghost mini" id="poolSortDir" onclick="togglePoolSortDir()" title="切换排序方向">↓</button>
           <button class="secondary" id="btnKeepaliveAll" onclick="keepaliveAll()" style="font-size:12px;padding:6px 14px">⚡ 一键保活所有账号</button>
         </div>
       </div>
@@ -535,9 +545,9 @@
       <div class="tblwrap"><table>
         <thead><tr>
           <th>任务 ID</th><th>类型</th><th>提示词</th><th>状态</th>
-          <th>耗时</th><th>创建时间</th><th>结果 / 错误</th><th></th>
+          <th>账号</th><th>耗时</th><th>创建时间</th><th>结果 / 错误</th><th></th>
         </tr></thead>
-        <tbody id="taskBody"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
+        <tbody id="taskBody"><tr><td colspan="9" class="empty">加载中…</td></tr></tbody>
       </table></div>
     </div>
   </section>
@@ -907,11 +917,15 @@ const I18N_EN = {
   "⚡ 一键保活所有账号": "⚡ Keep all accounts alive now",
   "标签": "Label",
   "账号 ID": "Account ID",
+  "排序": "Sort",
   "状态": "Status",
   "有效期": "Expires",
   "额度": "Quota",
   "启用": "Enable",
   "最后使用": "Last used",
+  "使用次数": "Use count",
+  "导入时间": "Imported",
+  "切换排序方向": "Toggle sort direction",
   "备注": "Notes",
   "操作": "Actions",
   "加载中…": "Loading…",
@@ -1681,6 +1695,83 @@ function expiryBadge(a){
 
 /* ================= 账号池 ================= */
 let accounts = [];
+let poolSortKey = localStorage.getItem('muse2api_pool_sort') || 'last_used';
+let poolSortDir = localStorage.getItem('muse2api_pool_sort_dir') || 'desc';
+
+function poolSortValue(a){
+  if (poolSortKey === 'status') {
+    if (!a.enabled) return 0;
+    if (a.ok === false) return 1;
+    if (a.ok == null) return 2;
+    return 3;
+  }
+  if (poolSortKey === 'label') return String(a.label || '').toLocaleLowerCase();
+  return Number(a[poolSortKey] || 0);
+}
+
+function sortedAccounts(){
+  const sign = poolSortDir === 'asc' ? 1 : -1;
+  return [...accounts].sort((a, b) => {
+    const av = poolSortValue(a), bv = poolSortValue(b);
+    let cmp = typeof av === 'string' ? av.localeCompare(bv, undefined, {numeric:true}) : av - bv;
+    if (!cmp) cmp = String(a.label || a.id).localeCompare(String(b.label || b.id), undefined, {numeric:true});
+    return cmp * sign;
+  });
+}
+
+function updatePoolSortControls(){
+  if ($('poolSort')) $('poolSort').value = poolSortKey;
+  if ($('poolSortDir')) $('poolSortDir').textContent = poolSortDir === 'asc' ? '↑' : '↓';
+}
+function changePoolSort(key){
+  poolSortKey = key || 'last_used';
+  localStorage.setItem('muse2api_pool_sort', poolSortKey);
+  updatePoolSortControls();
+  renderPoolRows();
+}
+function togglePoolSortDir(){
+  poolSortDir = poolSortDir === 'asc' ? 'desc' : 'asc';
+  localStorage.setItem('muse2api_pool_sort_dir', poolSortDir);
+  updatePoolSortControls();
+  renderPoolRows();
+}
+
+function renderPoolRows(){
+  updatePoolSortControls();
+  if (!accounts.length){
+    $('poolBody').innerHTML = '<tr><td colspan="10" class="empty">还没有账号。去「获取 Cookie」页签按三步导入一个</td></tr>';
+    return;
+  }
+  $('poolBody').innerHTML = sortedAccounts().map(a => {
+    const ok = a.ok;
+    const badge = !a.enabled ? '<span class="badge mute">已禁用</span>'
+                : ok === true  ? '<span class="badge ok">● 可用</span>'
+                : ok === false ? '<span class="badge bad">● 异常</span>'
+                : '<span class="badge warn">○ 未检测</span>';
+    const miss = a.essential_ok ? '' : ' <span class="badge bad" title="缺少核心 cookie，无法生成">缺核心</span>';
+    return `<tr>
+      <td><b>${esc(a.label)}</b><div class="mono ellip proxy-summary" title="${esc(a.proxy?.server || '默认网络')}">${esc(a.proxy?.server || '默认网络')}</div>${proxyStatus(a)}</td>
+      <td class="mono">${esc(a.id)}</td>
+      <td>${badge}${miss}</td>
+      <td>${expiryBadge(a)}</td>
+      <td>${quotaBadge(a)}</td>
+      <td>${a.enabled ? '<span class="badge ok">开</span>' : '<span class="badge mute">关</span>'}</td>
+      <td class="mono">${a.cookie_count}</td>
+      <td class="mono" title="${a.last_used ? fmtTime(a.last_used) : ''}">${ago(a.last_used)}</td>
+      <td class="mono ellip" title="${esc(a.note||'')}">${esc(a.note || '—')}</td>
+      <td><div class="acts">
+        <button class="ghost mini" onclick="testAcc('${a.id}')">测试</button>
+        <button class="ghost mini" onclick="keepaliveOne('${a.id}')" title="静默刷新会话令牌与有效期">保活</button>
+        <button class="ghost mini" onclick="queryQuota('${a.id}', this)">额度</button>
+        <button class="ghost mini" onclick="openProxy('${a.id}')">代理</button>
+        <button class="ghost mini" onclick="toggleAcc('${a.id}', ${!a.enabled})">${a.enabled ? '禁用' : '启用'}</button>
+        <button class="ghost mini" onclick="renameAcc('${a.id}','${esc(a.label)}')">改名</button>
+        <button class="ghost mini" onclick="updateCookies('${a.id}')">更新Cookie</button>
+        <button class="danger mini" onclick="delAcc('${a.id}','${esc(a.label)}')">删除</button>
+      </div></td>
+    </tr>`;
+  }).join('');
+}
 
 function proxyStatus(account){
   if (!account.proxy) return '';
@@ -1725,39 +1816,7 @@ async function loadPool(){
       bar.style.display = 'none';
     }
 
-    if (!accounts.length){
-      $('poolBody').innerHTML = '<tr><td colspan="10" class="empty">还没有账号。去「获取 Cookie」页签按三步导入一个</td></tr>';
-      return;
-    }
-    $('poolBody').innerHTML = accounts.map(a => {
-      const ok = a.ok;
-      const badge = !a.enabled ? '<span class="badge mute">已禁用</span>'
-                  : ok === true  ? '<span class="badge ok">● 可用</span>'
-                  : ok === false ? '<span class="badge bad">● 异常</span>'
-                  : '<span class="badge warn">○ 未检测</span>';
-      const miss = a.essential_ok ? '' : ' <span class="badge bad" title="缺少核心 cookie，无法生成">缺核心</span>';
-      return `<tr>
-        <td><b>${esc(a.label)}</b><div class="mono ellip proxy-summary" title="${esc(a.proxy?.server || '默认网络')}">${esc(a.proxy?.server || '默认网络')}</div>${proxyStatus(a)}</td>
-        <td class="mono">${esc(a.id)}</td>
-        <td>${badge}${miss}</td>
-        <td>${expiryBadge(a)}</td>
-        <td>${quotaBadge(a)}</td>
-        <td>${a.enabled ? '<span class="badge ok">开</span>' : '<span class="badge mute">关</span>'}</td>
-        <td class="mono">${a.cookie_count}</td>
-        <td class="mono" title="${a.last_used ? fmtTime(a.last_used) : ''}">${ago(a.last_used)}</td>
-        <td class="mono ellip" title="${esc(a.note||'')}">${esc(a.note || '—')}</td>
-        <td><div class="acts">
-          <button class="ghost mini" onclick="testAcc('${a.id}')">测试</button>
-          <button class="ghost mini" onclick="keepaliveOne('${a.id}')" title="静默刷新会话令牌与有效期">保活</button>
-          <button class="ghost mini" onclick="queryQuota('${a.id}', this)">额度</button>
-          <button class="ghost mini" onclick="openProxy('${a.id}')">代理</button>
-          <button class="ghost mini" onclick="toggleAcc('${a.id}', ${!a.enabled})">${a.enabled ? '禁用' : '启用'}</button>
-          <button class="ghost mini" onclick="renameAcc('${a.id}','${esc(a.label)}')">改名</button>
-          <button class="ghost mini" onclick="updateCookies('${a.id}')">更新Cookie</button>
-          <button class="danger mini" onclick="delAcc('${a.id}','${esc(a.label)}')">删除</button>
-        </div></td>
-      </tr>`;
-    }).join('');
+    renderPoolRows();
   }catch(e){
     $('poolBody').innerHTML = authOK === false
       ? '<tr><td colspan="10" class="empty">🔑 请先在右上角填入 API Key 并点「保存」</td></tr>'
@@ -1965,18 +2024,24 @@ async function loadTasks(){
     const d = await api('/admin/tasks?limit=60');
     const ts = d.tasks || [];
     $('taskCount').textContent = ts.length;
-    if (!ts.length){ $('taskBody').innerHTML = '<tr><td colspan="8" class="empty">暂无任务记录</td></tr>'; return; }
+    if (!ts.length){ $('taskBody').innerHTML = '<tr><td colspan="9" class="empty">暂无任务记录</td></tr>'; return; }
     $('taskBody').innerHTML = ts.map(t => {
       const cls = (t.status === 'succeeded' || t.status === 'completed') ? 'ok' : t.status === 'failed' ? 'bad'
                 : t.status === 'processing' ? 'info' : 'warn';
       let out = '—';
       if (t.result && t.result.url) out = `<a href="${esc(t.result.url)}" target="_blank">查看结果</a> <span class="mono">${fmtBytes(t.result.bytes)}</span>`;
       else if (t.error) out = `<span style="color:var(--bad)">${esc(t.error).slice(0,120)}</span>`;
+      const attempts = (Array.isArray(t.account_attempts) ? t.account_attempts : []).filter(a => a && (a.label || a.id));
+      const attemptTitle = attempts.map(a => a.label ? `${a.label} (${a.id})` : a.id).join(' → ');
+      const account = t.account
+        ? `<span title="${esc(attemptTitle || t.account)}">${esc(t.account_label || t.account)}${attempts.length > 1 ? ` <span class="mono">（${attempts.length}次）</span>` : ''}</span><div class="mono">${esc(t.account)}</div>`
+        : '<span class="mono">未分配</span>';
       return `<tr>
         <td class="mono">${esc(t.id)}</td>
         <td>${t.kind === 'video' ? '<span class="badge info">视频</span>' : '<span class="badge info">图片</span>'}</td>
         <td><span class="ellip" title="${esc(t.prompt)}">${esc(t.prompt)}</span></td>
         <td><span class="badge ${cls}">${esc(t.status)}</span></td>
+        <td>${account}</td>
         <td class="mono">${t.elapsed ? t.elapsed + 's' : '—'}</td>
         <td class="mono">${fmtTime(t.created_at)}</td>
         <td>${out}</td>
@@ -1984,7 +2049,7 @@ async function loadTasks(){
       </tr>`;
     }).join('');
   }catch(e){
-    $('taskBody').innerHTML = `<tr><td colspan="8" class="empty">加载失败：${esc(e.message)}</td></tr>`;
+    $('taskBody').innerHTML = `<tr><td colspan="9" class="empty">加载失败：${esc(e.message)}</td></tr>`;
   }
 }
 async function delTask(id){

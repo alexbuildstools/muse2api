@@ -282,7 +282,11 @@ class Store:
             tid = "task_" + uuid.uuid4().hex[:20]
             t = {"id": tid, "object": "task", "kind": kind, "prompt": prompt,
                  "status": "queued", "created_at": int(time.time()),
-                 "updated_at": int(time.time()), "result": None, "error": None}
+                 "updated_at": int(time.time()), "result": None, "error": None,
+                 # The account is bound as soon as a worker acquires it.  Keeping
+                 # these fields on queued/failed tasks makes account-level failures
+                 # diagnosable instead of only showing the account on success.
+                 "account": None, "account_label": None, "account_attempts": []}
             self.tasks[tid] = t
             _write(self.cfg.tasks_file, self.tasks)
             return t
