@@ -1,0 +1,21 @@
+[Unit]
+Description=muse2api Python API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/muse2api
+Environment=HOME=/root
+Environment=MUSE2API_HOME=/home/muse2api
+Environment=MUSE2API_HOME_DIR=/root
+Environment=MUSE2API_PORT=18610
+Environment=MUSE2API_CDP_PORT=19210
+EnvironmentFile=-/home/muse2api/.env
+ExecStart=/home/muse2api/.venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 18610
+Restart=always
+RestartSec=2
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

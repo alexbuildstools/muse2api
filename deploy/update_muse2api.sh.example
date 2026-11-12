@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP_DIR="${MUSE2API_APP_DIR:-/home/muse2api}"
+REPO_URL="${MUSE2API_REPO_URL:-https://github.com/alexbuildstools/muse2api.git}"
+BRANCH="${MUSE2API_BRANCH:-main}"
+SERVICE="${MUSE2API_SERVICE:-muse2api-python.service}"
+HEALTH_URL="${MUSE2API_HEALTH_URL:-http://127.0.0.1:18610/healthz}"
+
+cd "$APP_DIR"
+[[ -d .git ]] || { echo "错误：$APP_DIR 不是 Git 仓库" >&2; exit 1; }
+
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+  echo "错误：服务器存在已修改的受 Git 管理文件，已停止更新：" >&2
+  git status --short >&2
+  exit 1
+fi
+
+git remote set-url origin "$REPO_URL"
+OLD_COMMIT="$(git rev-parse HEAD)"
+echo "当前版本：$OLD_COMMIT"
+git fetch --depth=1 origin "$BRANCH"
+git reset --hard "origin/$BRANCH"
+NEW_COMMIT="$(git rev-parse HEAD)"
+echo "最新版本：$NEW_COMMIT"
+
+if [[ -x "$APP_DIR/.venv/bin/python" && -f requirements.txt ]]; then
+  "$APP_DIR/.venv/bin/python" -m pip install -r requirements.txt
+fi
+
+systemctl restart "$SERVICE"
+for _ in $(seq 1 20); do
+  if curl --connect-timeout 2 --max-time 5 -fsS "$HEALTH_URL" >/dev/null; then
+    echo "更新完成：$(git log -1 --oneline)"
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "错误：服务启动后健康检查失败" >&2
+systemctl status "$SERVICE" --no-pager || true
+journalctl -u "$SERVICE" -n 100 --no-pager -o cat || true
+exit 1

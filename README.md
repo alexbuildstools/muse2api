@@ -152,6 +152,8 @@ Upload one product photo and get talking-head sales videos, story-style ad short
    ```
    生产服务器如果使用其他服务名、端口或网卡，请先编辑 `/etc/default/muse2api-connectivity`。
 
+服务器迁移请参阅：[docs/MIGRATE.md](docs/MIGRATE.md)。备份脚本会包含账号 Cookie、任务数据和 `.env`，生成的压缩包只能安全传输，不能提交到 Git。
+
 ---
 
 ## 🧩 账号导入（Chrome 扩展 / 油猴脚本）
