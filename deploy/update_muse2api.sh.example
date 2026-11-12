@@ -6,11 +6,80 @@ REPO_URL="${MUSE2API_REPO_URL:-https://github.com/alexbuildstools/muse2api.git}"
 BRANCH="${MUSE2API_BRANCH:-main}"
 SERVICE="${MUSE2API_SERVICE:-muse2api-python.service}"
 HEALTH_URL="${MUSE2API_HEALTH_URL:-http://127.0.0.1:18610/healthz}"
+MEDIA_LINK="${MUSE2API_MEDIA_LINK:-$APP_DIR/data/media}"
+MEDIA_TARGET="${MUSE2API_MEDIA_TARGET:-/mnt/mydisk/muse2api-media}"
+MEDIA_MOUNTPOINT="${MUSE2API_MEDIA_MOUNTPOINT:-/mnt/mydisk}"
+UPDATE_SCRIPT_PATH="${MUSE2API_UPDATE_SCRIPT_PATH:-/root/update_muse2api.sh}"
+AUTO_SYNC_UPDATE_SCRIPT="${MUSE2API_AUTO_SYNC_UPDATE_SCRIPT:-1}"
+
+log() {
+  echo "[muse2api-update] $*"
+}
+
+require_media_disk() {
+  command -v mountpoint >/dev/null 2>&1 || {
+    echo "错误：系统缺少 mountpoint 命令，无法确认媒体盘是否挂载" >&2
+    return 1
+  }
+  if ! mountpoint -q "$MEDIA_MOUNTPOINT"; then
+    echo "错误：媒体盘未挂载：$MEDIA_MOUNTPOINT" >&2
+    echo "为避免把媒体写入系统盘，已停止更新。" >&2
+    return 1
+  fi
+  if [[ ! -d "$MEDIA_TARGET" ]]; then
+    echo "错误：媒体目录不存在：$MEDIA_TARGET" >&2
+    return 1
+  fi
+}
+
+ensure_media_link() {
+  require_media_disk
+  mkdir -p "$(dirname "$MEDIA_LINK")"
+
+  if [[ -L "$MEDIA_LINK" ]]; then
+    if [[ "$(readlink -f "$MEDIA_LINK")" == "$(readlink -f "$MEDIA_TARGET")" ]]; then
+      log "媒体软连接正常：$MEDIA_LINK -> $MEDIA_TARGET"
+      return 0
+    fi
+    echo "错误：$MEDIA_LINK 已经是指向其他位置的软连接" >&2
+    echo "当前：$(readlink "$MEDIA_LINK")" >&2
+    return 1
+  fi
+
+  if [[ -e "$MEDIA_LINK" ]]; then
+    if [[ ! -d "$MEDIA_LINK" ]]; then
+      echo "错误：媒体连接位置不是目录或软连接：$MEDIA_LINK" >&2
+      return 1
+    fi
+    if find "$MEDIA_LINK" -mindepth 1 -maxdepth 1 \
+        ! -name .gitkeep -print -quit | grep -q .; then
+      echo "错误：$MEDIA_LINK 目录中存在真实文件，拒绝自动删除" >&2
+      echo "请先确认并迁移这些文件后再更新。" >&2
+      return 1
+    fi
+    rm -f "$MEDIA_LINK/.gitkeep"
+    rmdir "$MEDIA_LINK"
+  fi
+
+  ln -s "$MEDIA_TARGET" "$MEDIA_LINK"
+  log "已恢复媒体软连接：$MEDIA_LINK -> $MEDIA_TARGET"
+}
+
+restore_media_link_on_exit() {
+  local exit_code=$?
+  if [[ "$exit_code" -ne 0 ]]; then
+    ensure_media_link >/dev/null 2>&1 || true
+  fi
+  exit "$exit_code"
+}
+
+require_media_disk
+trap restore_media_link_on_exit EXIT
 
 cd "$APP_DIR"
 [[ -d .git ]] || { echo "错误：$APP_DIR 不是 Git 仓库" >&2; exit 1; }
 
-if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+if [[ -n "$(git status --porcelain --untracked-files=no -- . ':(exclude)data/media')" ]]; then
   echo "错误：服务器存在已修改的受 Git 管理文件，已停止更新：" >&2
   git status --short >&2
   exit 1
@@ -23,6 +92,13 @@ git fetch --depth=1 origin "$BRANCH"
 git reset --hard "origin/$BRANCH"
 NEW_COMMIT="$(git rev-parse HEAD)"
 echo "最新版本：$NEW_COMMIT"
+ensure_media_link
+
+if [[ "$AUTO_SYNC_UPDATE_SCRIPT" == "1" &&
+      -f "$APP_DIR/deploy/update_muse2api.sh.example" ]]; then
+  install -m 0700 "$APP_DIR/deploy/update_muse2api.sh.example" "$UPDATE_SCRIPT_PATH"
+  log "已同步更新脚本：$UPDATE_SCRIPT_PATH"
+fi
 
 if [[ -x "$APP_DIR/.venv/bin/python" && -f requirements.txt ]]; then
   "$APP_DIR/.venv/bin/python" -m pip install -r requirements.txt

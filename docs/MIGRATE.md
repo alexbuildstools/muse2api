@@ -1,6 +1,6 @@
 # Muse2API 服务器迁移
 
-这套流程用于把当前运行中的 Muse2API 迁移到新的 Ubuntu VPS。备份包包含代码、Git 元数据、账号 Cookie、任务记录、媒体文件（默认包含）、`.env`、systemd 服务和网络监控配置。
+这套流程用于把当前运行中的 Muse2API 迁移到新的 Ubuntu VPS。备份包包含代码、Git 元数据、账号 Cookie、任务记录、`.env`、systemd 服务和网络监控配置。`data/media` 如果是外挂磁盘软连接，只会备份软连接本身，不会自动复制外挂磁盘里的全部媒体文件。
 
 备份包包含敏感信息，尤其是 `data/accounts.json`、`.env` 和可能的媒体文件。只通过安全的服务器间传输，不要上传到公开网盘或提交到 Git。
 
@@ -24,6 +24,12 @@ sudo bash deploy/backup-muse2api.sh
 
 ```bash
 sudo bash deploy/backup-muse2api.sh --no-media
+```
+
+如果媒体目录使用外挂盘软连接，建议另外备份外挂盘内容：
+
+```bash
+sudo tar -C /mnt/mydisk -czf /var/backups/muse2api/muse2api-media-时间.tar.gz muse2api-media
 ```
 
 浏览器 profile 通常不需要迁移，因为账号 Cookie 已保存在 `data/accounts.json`，服务启动时会重新注入。只有确认需要保留浏览器状态时才执行：
@@ -73,6 +79,20 @@ sudo apt-get install -y \
 ```bash
 resolvectl status
 ```
+
+新 VPS 需要先挂载媒体盘，并保持目录一致：
+
+```text
+/mnt/mydisk/muse2api-media
+```
+
+更新脚本会在每次拉取代码后自动保持：
+
+```text
+/home/muse2api/data/media -> /mnt/mydisk/muse2api-media
+```
+
+如果媒体盘未挂载，更新脚本会主动停止，避免误把媒体写入系统盘。
 
 ## 四、恢复应用
 
