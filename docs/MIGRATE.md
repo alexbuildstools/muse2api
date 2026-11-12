@@ -94,6 +94,16 @@ resolvectl status
 
 如果媒体盘未挂载，更新脚本会主动停止，避免误把媒体写入系统盘。
 
+如果旧的 `/home/muse2api/data/media` 里已经有数据，先执行一次迁移：
+
+```bash
+sudo apt-get install -y rsync
+cd /home/muse2api
+sudo bash deploy/migrate-media-to-disk.sh
+```
+
+脚本会先复制并校验数据，然后把旧目录改名为 `media.pre-migration-时间`，最后创建软连接。确认服务正常后，再手动删除旧目录。
+
 ## 四、恢复应用
 
 恢复脚本包含在备份包的 `app/deploy/restore-muse2api.sh` 中。先从备份包取出脚本：
