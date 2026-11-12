@@ -1138,7 +1138,8 @@ class MuseEngine:
                 except Exception:
                     pass
         time.sleep(0.3)
-        log.info("【页面发送】点击结果=%s chars=%s", clicked, len(prompt or ""))
+        log.info("【页面发送】点击结果=%s chars=%s composer_after=%s",
+                 clicked, len(prompt or ""), self._composer_unsent())
         return clicked
 
     def _composer_unsent(self) -> str:
@@ -1188,7 +1189,8 @@ class MuseEngine:
 
     def _wait_attachment(self, baseline_src: str, timeout: int, expect: str,
                          on_progress=None, base_agent_cnt: int = 0,
-                         base_att_cnt: int = 0, stop_event=None, baseline_sources=None) -> dict | None:
+                         base_att_cnt: int = 0, base_user_cnt: int = 0,
+                         stop_event=None, baseline_sources=None) -> dict | None:
         baseline_sources = set(baseline_sources or ()) | {baseline_src}
         deadline = time.time() + timeout
         t_start = time.time()
@@ -1253,6 +1255,7 @@ class MuseEngine:
                         return att
             elapsed = time.time() - t_start
             cur_cnt = base_agent_cnt
+            cur_user_cnt = base_user_cnt
             cur_txt = ""
             has_stop = False
             tail = ""
@@ -1260,6 +1263,8 @@ class MuseEngine:
                 st_raw = self.page.js("""(function(){
                     var bs=[].slice.call(document.querySelectorAll('div[class*="hatch-chat-groupable-bubble"]'))
                         .filter(function(b){return /hatch-agent-bubble-bg/.test(b.className||'');});
+                    var users=[].slice.call(document.querySelectorAll('div[class*="hatch-chat-groupable-bubble"]'))
+                        .filter(function(b){return /chat-user-bubble/.test(b.className||'');});
                     var lastTxt = bs.length ? (bs[bs.length-1].innerText||'').trim() : '';
                     var hasStop = !!(document.querySelector('[data-testid="hatch-composer-stop-button"]')
                         || document.querySelector('button[aria-label*="Stop" i]')
@@ -1269,7 +1274,7 @@ class MuseEngine:
                     // status and falsely fail a new generation.
                     var thread = document.querySelector('main,[role="main"],[class*="chat-scroll"],[class*="hatch-chat-scroll"]') || document.body;
                     var tail = thread ? (thread.innerText||'').slice(-1200) : '';
-                    return JSON.stringify({cnt: bs.length, txt: lastTxt, stop: hasStop, tail: tail,
+                    return JSON.stringify({cnt: bs.length, userCnt: users.length, txt: lastTxt, stop: hasStop, tail: tail,
                         path: location.pathname || '', href: location.href || ''});
                 })()""")
                 st = json.loads(st_raw) if st_raw else {}
@@ -1277,20 +1282,21 @@ class MuseEngine:
                 st = {}
             tail = st.get("tail") or ""
             cur_cnt = int(st.get("cnt") or 0)
+            cur_user_cnt = int(st.get("userCnt") or 0)
             cur_txt = st.get("txt") or ""
             has_stop = bool(st.get("stop"))
             path = st.get("path") or ""
             seen_stop = seen_stop or has_stop
-            state = (cur_cnt, cur_txt, len(atts), has_stop, path)
+            state = (cur_cnt, cur_user_cnt, cur_txt, len(atts), has_stop, path)
             if previous_state is None or state != previous_state:
                 last_activity = time.time()
                 previous_state = state
             # Do not log generated text or URLs; counts and lifecycle flags are
             # enough to identify where delivery stopped without leaking prompts.
-            lifecycle = (cur_cnt, len(atts), has_stop, path)
+            lifecycle = (cur_cnt, cur_user_cnt, len(atts), has_stop, path)
             if lifecycle != logged_state:
-                log.info("【等待成品】expect=%s agent_count=%s attachment_count=%s stop=%s path=%s",
-                         expect, cur_cnt, len(atts), has_stop, path)
+                log.info("【等待成品】expect=%s user_count=%s agent_count=%s attachment_count=%s stop=%s path=%s",
+                         expect, cur_user_cnt, cur_cnt, len(atts), has_stop, path)
                 logged_state = lifecycle
 
             if on_progress:
@@ -1322,10 +1328,14 @@ class MuseEngine:
             # A Stop button is also shown for messages never acknowledged by the gateway.
             if elapsed > 30.0 and cur_cnt == base_agent_cnt and re.search(
                     r"Still sending|Delivery not confirmed|正在发送|未确认送达", tail, re.I):
-                log.warning("【等待成品失败】Muse 未确认提示词送达 elapsed=%.1fs agent_count=%s attachment_count=%s stop=%s path=%s",
-                            elapsed, cur_cnt, len(atts), has_stop, path)
+                self._debug_dump("delivery-fail")
+                detail = ("提示词未进入当前会话"
+                          if cur_user_cnt <= base_user_cnt
+                          else "提示词已进入当前会话但 Muse 未确认后端送达")
+                log.warning("【等待成品失败】%s elapsed=%.1fs user_count=%s agent_count=%s attachment_count=%s stop=%s path=%s",
+                            detail, elapsed, cur_user_cnt, cur_cnt, len(atts), has_stop, path)
                 raise MuseGenerationError(
-                    "提示词未成功送达后端（Still sending / Delivery not confirmed），终止等待并重试")
+                    f"{detail}（Still sending / Delivery not confirmed），终止等待并重试")
 
             refusal_source = cur_txt if cur_cnt > base_agent_cnt else (
                 tail if seen_stop and not has_stop and elapsed > 20.0 else "")
@@ -1895,6 +1905,7 @@ class MuseEngine:
         base = atts_before[-1] if atts_before else {}
         baseline_src = base.get("src") or ""
         base_agent_cnt = self._agent_count()
+        base_user_cnt = self._user_count()
         if time.monotonic() >= deadline:
             raise MuseGenerationError("任务准备超时，已停止发送")
         send_result = self._send(prompt)
@@ -1909,6 +1920,7 @@ class MuseEngine:
             att = self._wait_attachment(
                 baseline_src, max(0, deadline - time.monotonic()), expect, on_progress=on_progress,
                 base_agent_cnt=base_agent_cnt, base_att_cnt=len(atts_before),
+                base_user_cnt=base_user_cnt,
                 stop_event=stop_event, baseline_sources=baseline_sources
             )
             if not att:

@@ -122,6 +122,12 @@
   button.danger:hover{background:rgba(248,113,113,.12)}
   button.mini{padding:4px 10px;font-size:12px;border-radius:7px}
   button.primary-lg{padding:11px 24px;font-size:13.5px}
+  details.access-card>summary{list-style:none;display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
+  details.access-card>summary::-webkit-details-marker{display:none}
+  details.access-card>summary h3{flex:1;margin:0}
+  details.access-card>summary::after{content:'▸';color:var(--muted);font-size:16px;transition:transform .15s}
+  details.access-card[open]>summary::after{transform:rotate(90deg)}
+  details.access-card .access-body{padding-top:10px}
 
   /* ---------- 表格 ---------- */
   .tblwrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius)}
@@ -294,32 +300,34 @@
       <span id="expWarnText"></span>
       <button class="ghost mini" onclick="goTab('cookie')">去重新登录</button>
     </div>
-    <div class="card" style="border-color:rgba(79,140,255,.4)">
-      <h3>接入信息 <span class="tag">下游项目填这两个值</span></h3>
-      <div class="hint">把下面两项填进你的项目就能调用。BASE URL 就是接口地址前缀。</div>
-      <div class="row">
-        <div style="flex:3">
-          <label>BASE URL（接口地址）</label>
-          <div class="copyline">
-            <input type="text" id="inBase" readonly>
-            <button class="ghost mini" onclick="copyEl('inBase')">复制</button>
+    <details class="card access-card" style="border-color:rgba(79,140,255,.4)">
+      <summary><h3>接入信息 <span class="tag">下游项目填这两个值</span></h3></summary>
+      <div class="access-body">
+        <div class="hint">把下面两项填进你的项目就能调用。BASE URL 就是接口地址前缀。</div>
+        <div class="row">
+          <div style="flex:3">
+            <label>BASE URL（接口地址）</label>
+            <div class="copyline">
+              <input type="text" id="inBase" readonly>
+              <button class="ghost mini" onclick="copyEl('inBase')">复制</button>
+            </div>
+          </div>
+          <div style="flex:3">
+            <label>API Key（访问密钥）</label>
+            <div class="copyline">
+              <input type="text" id="inKey" readonly>
+              <button class="ghost mini" onclick="toggleKey()" id="keyEye">显示</button>
+              <button class="ghost mini" onclick="copyKey()">复制</button>
+              <button class="danger mini" onclick="rotateKey()">重新生成</button>
+            </div>
           </div>
         </div>
-        <div style="flex:3">
-          <label>API Key（访问密钥）</label>
-          <div class="copyline">
-            <input type="text" id="inKey" readonly>
-            <button class="ghost mini" onclick="toggleKey()" id="keyEye">显示</button>
-            <button class="ghost mini" onclick="copyKey()">复制</button>
-            <button class="danger mini" onclick="rotateKey()">重新生成</button>
-          </div>
+        <div class="hint" style="margin:11px 0 0" data-i18n="model-names-hint">
+          模型名：<code>muse-spark</code>（对话/代码）、<code>muse-image</code>（生图）、<code>muse-video</code>（生视频）。
+          完整调用示例见「接入文档」页签。
         </div>
       </div>
-      <div class="hint" style="margin:11px 0 0" data-i18n="model-names-hint">
-        模型名：<code>muse-spark</code>（对话/代码）、<code>muse-image</code>（生图）、<code>muse-video</code>（生视频）。
-        完整调用示例见「接入文档」页签。
-      </div>
-    </div>
+    </details>
 
     <div class="stats">
       <div class="stat b"><div class="k">账号总数</div><div class="v" id="sTotal">0</div></div>
@@ -327,29 +335,6 @@
       <div class="stat r"><div class="k">异常</div><div class="v" id="sBad">0</div></div>
       <div class="stat y"><div class="k">已禁用</div><div class="v" id="sDis">0</div></div>
       <div class="stat"><div class="k">媒体文件</div><div class="v" id="sMedia">0</div></div>
-    </div>
-
-    <div class="card">
-      <h3>添加账号 <span class="tag">支持批量</span></h3>
-      <div class="hint" data-i18n="add-account-hint">
-        从浏览器复制 <b>muse.ai</b> 的 Cookie 字符串粘贴进来即可。必要 cookie：
-        <code>hatch_sess</code>。<code>hatch_vml</code> 为可选工作区令牌，缺少时不阻止导入。
-        批量导入时每行一个账号，格式 <code>标签 | cookie串</code>（标签可省略）。
-      </div>
-      <div class="row">
-        <div style="max-width:230px">
-          <label>账号标签（单条导入用）</label>
-          <input type="text" id="newLabel" placeholder="例如 muse-main">
-        </div>
-        <div style="flex:3">
-          <label>Cookie 字符串</label>
-          <textarea id="newCookie" rows="4" placeholder="hatch_sess=...; hatch_vml=...&#10;或批量：&#10;acc-01 | hatch_sess=...; hatch_vml=...&#10;acc-02 | hatch_sess=...; hatch_vml=..."></textarea>
-        </div>
-      </div>
-      <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
-        <button class="primary-lg" onclick="addAccount(false)">导入账号</button>
-        <button class="ghost" onclick="document.getElementById('newCookie').value='';">清空</button>
-      </div>
     </div>
 
     <div class="card">
