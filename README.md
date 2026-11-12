@@ -142,6 +142,16 @@ Upload one product photo and get talking-head sales videos, story-style ad short
    }
    ```
 
+5. **启用 Muse 网络/DNS 定时自愈检查（推荐）**：
+   该检查每 5 分钟检测 `hatch.metaaivm.com` 的 TCP/TLS 可达性和本地服务健康状态。
+   如果 DNS 节点不可达，会刷新 `systemd-resolved` 并切换到 `1.1.1.1`、`8.8.8.8`；恢复后才会重启一次 API 服务，避免失败时循环重启。
+   ```bash
+   cd /home/muse2api
+   sudo bash deploy/install-connectivity-monitor.sh
+   sudo journalctl -u muse2api-connectivity-check.service -n 50 --no-pager
+   ```
+   生产服务器如果使用其他服务名、端口或网卡，请先编辑 `/etc/default/muse2api-connectivity`。
+
 ---
 
 ## 🧩 账号导入（Chrome 扩展 / 油猴脚本）

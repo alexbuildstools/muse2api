@@ -1,0 +1,10 @@
+[Unit]
+Description=muse2api Muse connectivity and DNS self-healing check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/etc/default/muse2api-connectivity
+ExecStart=/usr/local/sbin/muse2api-connectivity-check
