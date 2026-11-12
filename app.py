@@ -2584,7 +2584,7 @@ def get_keepalive_status(_=Depends(auth)):
 
 # ------------------------- 仓库实时更新检测、通知与一键在线升级 -------------------------
 REPO_URL = os.environ.get(
-    "MUSE2API_REPO", "https://github.com/hubs/muse2api"
+    "MUSE2API_REPO", "https://github.com/alexbuildstools/muse2api"
 ).strip().rstrip("/")
 REPO_SLUG = REPO_URL.split("github.com/", 1)[-1].strip("/").removesuffix(".git")
 TRACKED_REPO_PATHS = [

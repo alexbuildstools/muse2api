@@ -1,7 +1,7 @@
 {
   "version": "1.6.11",
   "updated_at": "2026-11-12",
-  "repo": "https://github.com/hubs/muse2api",
+  "repo": "https://github.com/alexbuildstools/muse2api",
   "highlights": [
     "修复 Still sending / Delivery not confirmed 触发自动切号重试，避免单个任务被放大到约 100 秒。",
     "页面状态判断限制在当前聊天区域，避免侧栏历史状态误判新任务。",
