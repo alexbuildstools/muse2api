@@ -5,6 +5,7 @@ import json
 import time
 
 import threading
+from collections import deque
 
 import requests
 import websocket
@@ -15,11 +16,26 @@ class CDPError(RuntimeError):
 
 
 class CDP:
+    _CAPTURED_EVENTS = {
+        "Network.loadingFailed",
+        "Network.responseReceived",
+        "Network.webSocketCreated",
+        "Network.webSocketClosed",
+        "Network.webSocketFrameError",
+        "Runtime.exceptionThrown",
+        "Runtime.consoleAPICalled",
+    }
+
     def __init__(self, ws_url: str, timeout: float = 90.0, max_size: int = 256 << 20):
         self.ws = websocket.create_connection(ws_url, timeout=timeout, max_size=max_size)
         self.timeout = timeout
         self._id = 0
         self._lock = threading.Lock()
+        self._events = deque(maxlen=400)
+
+    def _save_event(self, msg: dict):
+        if msg.get("method") in self._CAPTURED_EVENTS:
+            self._events.append(msg)
 
     def send(self, method: str, params: dict | None = None, timeout: float | None = None):
         with self._lock:
@@ -38,7 +54,15 @@ class CDP:
                     if "error" in msg:
                         raise CDPError(f"{method}: {msg['error']}")
                     return msg
+                self._save_event(msg)
             raise TimeoutError(f"CDP {method} 超时")
+
+    def drain_events(self) -> list[dict]:
+        """取出最近捕获的异步浏览器事件，避免诊断日志无限累积。"""
+        with self._lock:
+            events = list(self._events)
+            self._events.clear()
+        return events
 
     def js(self, expr: str, await_promise: bool = False, timeout: float | None = None):
         r = self.send("Runtime.evaluate",
@@ -58,6 +82,7 @@ class CDP:
                 ev = json.loads(self.ws.recv())
             except Exception:  # noqa: BLE001
                 continue
+            self._save_event(ev)
             if on_event and "method" in ev:
                 on_event(ev)
 

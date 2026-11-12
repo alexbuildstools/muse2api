@@ -773,6 +773,56 @@ class MuseEngine:
         except Exception as exc:  # noqa: BLE001
             log.warning("【页面快照失败】stage=%s error=%s", stage, exc)
 
+    @staticmethod
+    def _safe_network_url(url: str) -> str:
+        try:
+            parsed = urllib.parse.urlsplit(url or "")
+            return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))[:240]
+        except Exception:  # noqa: BLE001
+            return (url or "")[:240]
+
+    def _log_network_events(self, stage: str):
+        """记录 Muse 页面网络/WS 错误，避免输出请求参数、Cookie 或提示词。"""
+        try:
+            drain = getattr(self.page, "drain_events", None) if self.page else None
+            events = drain() if drain else []
+        except Exception as exc:  # noqa: BLE001
+            log.warning("【浏览器网络日志失败】stage=%s error=%s", stage, exc)
+            return
+        for event in events:
+            method = event.get("method") or ""
+            params = event.get("params") or {}
+            if method == "Network.loadingFailed":
+                log.warning("【浏览器网络失败】stage=%s request=%s type=%s error=%s canceled=%s",
+                            stage, params.get("requestId", ""), params.get("type", ""),
+                            params.get("errorText", ""), params.get("canceled", False))
+            elif method == "Network.responseReceived":
+                response = params.get("response") or {}
+                status = int(response.get("status") or 0)
+                resource_type = params.get("type") or ""
+                url = self._safe_network_url(response.get("url") or "")
+                if status >= 400 or resource_type.lower() == "websocket":
+                    log.warning("【浏览器网络响应】stage=%s status=%s type=%s url=%s",
+                                stage, status, resource_type, url)
+            elif method == "Network.webSocketCreated":
+                log.info("【浏览器WS创建】stage=%s request=%s url=%s",
+                         stage, params.get("requestId", ""),
+                         self._safe_network_url(params.get("url") or ""))
+            elif method == "Network.webSocketClosed":
+                log.warning("【浏览器WS关闭】stage=%s request=%s code=%s",
+                            stage, params.get("requestId", ""), params.get("code", ""))
+            elif method == "Network.webSocketFrameError":
+                log.warning("【浏览器WS错误】stage=%s request=%s error=%s",
+                            stage, params.get("requestId", ""), params.get("errorMessage", ""))
+            elif method == "Runtime.exceptionThrown":
+                details = params.get("exceptionDetails") or {}
+                log.warning("【浏览器脚本异常】stage=%s text=%s",
+                            stage, str(details.get("text") or details.get("exception", {}).get("description", ""))[:300])
+            elif method == "Runtime.consoleAPICalled":
+                if (params.get("type") or "").lower() in {"error", "warning"}:
+                    log.warning("【浏览器控制台】stage=%s type=%s",
+                                stage, params.get("type", ""))
+
     def reset_thread(self, for_chat: bool = False):
         """关闭残留弹窗并确保处于干净会话且 WebSocket 已就绪。
         对于纯文本对话（for_chat=True），若当前热页面无附件、无卡死且气泡数较少，直接复用现有热连接以实现 2s 级秒回。"""
@@ -860,6 +910,7 @@ class MuseEngine:
         if self._wait_ws_ready(page, timeout=self.cfg.login_wait):
             self.current_acc_id = account_id
             self._log_page_snapshot("connected")
+            self._log_network_events("connected")
             return page
         self._log_page_snapshot("not-ready", account_id=account_id)
         try:
@@ -1141,6 +1192,7 @@ class MuseEngine:
         log.info("【页面发送】开始填写提示词 chars=%s url=%s",
                  len(prompt or ""), getattr(self.page, "url", ""))
         self._log_page_snapshot("before-send")
+        self._log_network_events("before-send")
         # 1. 确保 textarea 滚动到视口中央并获得真实焦点
         try:
             self.page.js("""(function(){
@@ -1214,6 +1266,7 @@ class MuseEngine:
                     pass
         time.sleep(0.3)
         self._log_page_snapshot("after-send")
+        self._log_network_events("after-send")
         log.info("【页面发送】点击结果=%s chars=%s composer_after=%s",
                  clicked, len(prompt or ""), self._composer_unsent())
         return clicked
@@ -1405,6 +1458,7 @@ class MuseEngine:
             if elapsed > 30.0 and cur_cnt == base_agent_cnt and re.search(
                     r"Still sending|Delivery not confirmed|正在发送|未确认送达", tail, re.I):
                 self._debug_dump("delivery-fail")
+                self._log_network_events("delivery-fail")
                 detail = ("提示词未进入当前会话"
                           if cur_user_cnt <= base_user_cnt
                           else "提示词已进入当前会话但 Muse 未确认后端送达")
