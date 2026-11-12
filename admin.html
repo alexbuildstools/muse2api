@@ -565,6 +565,8 @@
           <input type="text" id="imgPrompt" value="一只戴宇航头盔的柴犬，赛博朋克风格，霓虹灯背景"></div>
         <div style="max-width:140px"><label>比例</label>
           <select id="imgSize"><option>1:1</option><option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option></select></div>
+        <div style="max-width:230px"><label>运行账号</label>
+          <select id="imgAccount"><option value="">自动轮转</option></select></div>
       </div>
       <div style="margin-top:12px"><button class="primary-lg" id="imgBtn" onclick="runImage()">开始生成图片</button></div>
       <div class="result" id="imgRes"></div>
@@ -580,6 +582,8 @@
           <input type="number" id="vidDur" value="5" min="1" max="30"></div>
         <div style="max-width:140px"><label>比例</label>
           <select id="vidSize"><option>16:9</option><option>9:16</option><option>1:1</option></select></div>
+        <div style="max-width:230px"><label>运行账号</label>
+          <select id="vidAccount"><option value="">自动轮转</option></select></div>
       </div>
       <div style="margin-top:12px"><button class="primary-lg" id="vidBtn" onclick="runVideo()">开始生成视频</button></div>
       <div class="result" id="vidRes"></div>
@@ -1780,6 +1784,7 @@ async function loadPool(){
     $('poolCount').textContent = accounts.length;
     $('pAcc').className = 'pill ' + (accounts.length ? 'on' : 'off');
     $('pAcc').innerHTML = `<span class="led"></span>账号 <b>${accounts.length}</b>`;
+    renderAccountSelectors();
 
     // 快过期 / 已过期提醒。hatch_vml 只有约 2 天寿命，且不会因为使用而延长，
     // 所以这里是刚需提醒，不是锦上添花。
@@ -1807,6 +1812,20 @@ async function loadPool(){
       ? '<tr><td colspan="10" class="empty">🔑 请先在右上角填入 API Key 并点「保存」</td></tr>'
       : `<tr><td colspan="10" class="empty">加载失败：${esc(e.message)}</td></tr>`;
   }
+}
+
+function renderAccountSelectors(){
+  const enabled = accounts.filter(a => a && a.enabled);
+  const options = '<option value="">自动轮转</option>' + enabled.map(a =>
+    `<option value="${esc(a.id)}">${esc(a.label || a.id)} · ${esc(a.id)}</option>`
+  ).join('');
+  ['imgAccount', 'vidAccount'].forEach(id => {
+    const select = $(id);
+    if (!select) return;
+    const previous = select.value;
+    select.innerHTML = options;
+    if (enabled.some(a => a.id === previous)) select.value = previous;
+  });
 }
 
 async function addAccount(fromManual){
@@ -2193,7 +2212,8 @@ async function runImage(){
   const t0 = Date.now();
   try{
     let r = await api('/v1/images/tasks', {method:'POST',
-      body: JSON.stringify({prompt, size: $('imgSize').value, timeout:600})});
+      body: JSON.stringify({prompt, size: $('imgSize').value, timeout:600,
+        account_id: $('imgAccount').value || null})});
     const taskId = r.id;
     const deadline = Date.now() + 15 * 60 * 1000;
     let failures = 0;
@@ -2230,7 +2250,8 @@ async function runVideo(){
   const t0 = Date.now();
   try{
     const t = await api('/v1/videos', {method:'POST', body: JSON.stringify({
-      prompt, duration: parseInt($('vidDur').value) || 5, size: $('vidSize').value})});
+      prompt, duration: parseInt($('vidDur').value) || 5, size: $('vidSize').value,
+      account_id: $('vidAccount').value || null})});
     const tick = async () => {
       const s = await api('/v1/videos/' + t.id);
       const el = ((Date.now()-t0)/1000).toFixed(0);

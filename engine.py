@@ -702,6 +702,77 @@ class MuseEngine:
             time.sleep(0.1)
         return False
 
+    _PAGE_SNAPSHOT_JS = r"""(function(){
+        function visible(e){
+            return !!e && e.getClientRects().length > 0
+                && getComputedStyle(e).visibility !== 'hidden';
+        }
+        function label(e){
+            return ((e.getAttribute('aria-label') || e.innerText || e.textContent || '')
+                .replace(/\s+/g, ' ').trim().slice(0, 80));
+        }
+        function describe(e){
+            return {
+                tag: e.tagName.toLowerCase(),
+                id: e.id || '',
+                role: e.getAttribute('role') || '',
+                testid: e.getAttribute('data-testid') || '',
+                aria: e.getAttribute('aria-label') || '',
+                placeholder: e.getAttribute('placeholder') || '',
+                type: e.getAttribute('type') || '',
+                disabled: !!e.disabled,
+                cls: String(e.className || '').slice(0, 180),
+                label: label(e)
+            };
+        }
+        var fields = [...document.querySelectorAll('textarea,input,[contenteditable="true"]')]
+            .filter(visible).slice(0, 12).map(describe);
+        var buttons = [...document.querySelectorAll('button,[role="button"]')]
+            .filter(visible).slice(-40).map(describe);
+        var bubbles = [...document.querySelectorAll('div[class*="hatch-chat-groupable-bubble"]')];
+        var users = bubbles.filter(function(e){return /chat-user-bubble/.test(e.className || '');});
+        var agents = bubbles.filter(function(e){return /hatch-agent-bubble-bg/.test(e.className || '');});
+        var attachments = document.querySelectorAll('[data-testid^="hatch-chat-attachment-presentation-"]').length;
+        var send = document.querySelector('[data-testid="hatch-composer-send-button"]')
+            || document.querySelector('button[aria-label="Send"]');
+        var stop = document.querySelector('[data-testid="hatch-composer-stop-button"]')
+            || document.querySelector('button[aria-label*="Stop" i]')
+            || document.querySelector('button[aria-label*="停止"]');
+        return JSON.stringify({
+            host: location.hostname || '', path: location.pathname || '',
+            title: document.title || '', ready: document.readyState,
+            isMuse: /(^|\.)muse\.ai$/i.test(location.hostname || ''),
+            hydrated: (document.querySelector('[data-hatch-shell-hydration-state]') || {})
+                .getAttribute ? document.querySelector('[data-hatch-shell-hydration-state]')
+                .getAttribute('data-hatch-shell-hydration-state') || '' : '',
+            composer: !!document.querySelector('textarea'),
+            send: !!send, sendDisabled: !!(send && (send.disabled || send.getAttribute('aria-disabled') === 'true')),
+            stop: !!stop, userCount: users.length, agentCount: agents.length,
+            attachmentCount: attachments, fields: fields, buttons: buttons
+        });
+    })()"""
+
+    def _log_page_snapshot(self, stage: str, account_id: str | None = None):
+        """记录当前 Muse 页面结构，不记录 Cookie、输入框值或完整提示词。"""
+        try:
+            raw = self.page.js(self._PAGE_SNAPSHOT_JS) if self.page else ""
+            snapshot = json.loads(raw) if raw else {}
+            fields = json.dumps(snapshot.get("fields") or [], ensure_ascii=False, separators=(",", ":"))
+            buttons = json.dumps(snapshot.get("buttons") or [], ensure_ascii=False, separators=(",", ":"))
+            log.info(
+                "【页面快照】stage=%s account=%s host=%s path=%s title=%s muse=%s ready=%s hydrated=%s "
+                "composer=%s send=%s send_disabled=%s stop=%s user_count=%s agent_count=%s attachments=%s "
+                "fields=%s buttons=%s",
+                stage, account_id if account_id is not None else (self.current_acc_id or ""),
+                snapshot.get("host", ""), snapshot.get("path", ""),
+                snapshot.get("title", ""), snapshot.get("isMuse"), snapshot.get("ready", ""),
+                snapshot.get("hydrated", ""), snapshot.get("composer"), snapshot.get("send"),
+                snapshot.get("sendDisabled"), snapshot.get("stop"), snapshot.get("userCount", 0),
+                snapshot.get("agentCount", 0), snapshot.get("attachmentCount", 0), fields, buttons,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("【页面快照失败】stage=%s error=%s", stage, exc)
+
     def reset_thread(self, for_chat: bool = False):
         """关闭残留弹窗并确保处于干净会话且 WebSocket 已就绪。
         对于纯文本对话（for_chat=True），若当前热页面无附件、无卡死且气泡数较少，直接复用现有热连接以实现 2s 级秒回。"""
@@ -755,6 +826,7 @@ class MuseEngine:
                 and (account_id is None or getattr(self, "current_acc_id", None) == account_id)):
             try:
                 if self.page.js("!!document.querySelector('textarea')") and self._wait_ws_ready(self.page, timeout=8.0):
+                    self._log_page_snapshot("reuse-ready")
                     return self.page
             except Exception:
                 pass
@@ -787,7 +859,9 @@ class MuseEngine:
         page.send("Page.navigate", {"url": "https://muse.ai/thread/new"})
         if self._wait_ws_ready(page, timeout=self.cfg.login_wait):
             self.current_acc_id = account_id
+            self._log_page_snapshot("connected")
             return page
+        self._log_page_snapshot("not-ready", account_id=account_id)
         try:
             body = (page.js("document.body ? document.body.innerText.slice(0,1200) : ''") or "").lower()
         except Exception:
@@ -1066,6 +1140,7 @@ class MuseEngine:
     def _send(self, prompt: str):
         log.info("【页面发送】开始填写提示词 chars=%s url=%s",
                  len(prompt or ""), getattr(self.page, "url", ""))
+        self._log_page_snapshot("before-send")
         # 1. 确保 textarea 滚动到视口中央并获得真实焦点
         try:
             self.page.js("""(function(){
@@ -1138,6 +1213,7 @@ class MuseEngine:
                 except Exception:
                     pass
         time.sleep(0.3)
+        self._log_page_snapshot("after-send")
         log.info("【页面发送】点击结果=%s chars=%s composer_after=%s",
                  clicked, len(prompt or ""), self._composer_unsent())
         return clicked

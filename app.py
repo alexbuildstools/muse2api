@@ -482,6 +482,7 @@ def safe_chat_stream(cookies: dict, prompt: str, expires: dict | None,
 class ImageRequest(BaseModel):
     prompt: str
     model: str = "muse-image"
+    account_id: str | None = None
     n: int = 1
     size: str | None = None
     aspect_ratio: str | None = None
@@ -500,6 +501,7 @@ class ImageRequest(BaseModel):
 class VideoRequest(BaseModel):
     prompt: str
     model: str = "muse-video"
+    account_id: str | None = None
     duration: int | None = None
     size: str | None = None
     aspect_ratio: str | None = None
@@ -1353,6 +1355,7 @@ def _queue_image(req: ImageRequest, prompt: str, reference_images: list[str],
         try:
             res, acc_id = _run_generation(
                 prompt, "image", req.timeout or CFG.image_timeout,
+                account_id=req.account_id,
                 reference_images=reference_images,
                 on_progress=lambda p: store.update_task(tid, progress=p),
                 on_acquired=_on_acquired,
@@ -1408,7 +1411,8 @@ async def images_generations(req: ImageRequest, _=Depends(auth)):
         return _queue_image(req, prompt, ref_images)
     try:
         res, _acc = await asyncio.to_thread(
-            _run_generation, prompt, "image", timeout, reference_images=ref_images)
+            _run_generation, prompt, "image", timeout, account_id=req.account_id,
+            reference_images=ref_images)
     except MuseAuthError as exc:
         raise HTTPException(401, str(exc)) from exc
     except MuseGenerationError as exc:
@@ -1426,6 +1430,7 @@ async def images_edits(request: Request, _=Depends(auth)):
     aspect_ratio = None
     response_format = "url"
     timeout = None
+    account_id = None
     ref_image_data: list[str] = []
     async_mode = False
 
@@ -1435,6 +1440,7 @@ async def images_edits(request: Request, _=Depends(auth)):
         async_mode = form.get("async", False)
         prompt = form.get("prompt") or ""
         model = form.get("model") or "muse-image"
+        account_id = form.get("account_id") or None
         size = form.get("size")
         aspect_ratio = form.get("aspect_ratio")
         response_format = form.get("response_format") or "url"
@@ -1474,6 +1480,7 @@ async def images_edits(request: Request, _=Depends(auth)):
         async_mode = body.get("async", False)
         prompt = body.get("prompt") or ""
         model = body.get("model") or "muse-image"
+        account_id = body.get("account_id")
         size = body.get("size")
         aspect_ratio = body.get("aspect_ratio")
         response_format = body.get("response_format") or "url"
@@ -1491,6 +1498,7 @@ async def images_edits(request: Request, _=Depends(auth)):
     req_obj = ImageRequest(
         prompt=prompt,
         model=model,
+        account_id=account_id,
         size=size,
         aspect_ratio=aspect_ratio,
         response_format=response_format,
@@ -1507,6 +1515,7 @@ async def images_edits(request: Request, _=Depends(auth)):
     try:
         res, _acc = await asyncio.to_thread(
             _run_generation, full_prompt, "image", gen_timeout,
+            account_id=req_obj.account_id,
             reference_images=ref_image_data)
     except MuseAuthError as exc:
         raise HTTPException(401, str(exc)) from exc
@@ -1539,6 +1548,7 @@ async def create_video(req: VideoRequest, _=Depends(auth)):
             def prog_cb(p):
                 store.update_task(task["id"], progress=p)
             res, acc_id = _run_generation(prompt, "video", timeout, on_progress=prog_cb,
+                                          account_id=req.account_id,
                                           reference_images=ref_images, on_acquired=_on_acquired,
                                           on_account=lambda account: _record_task_account(task["id"], account))
             vurl = media_url(res["filename"])
