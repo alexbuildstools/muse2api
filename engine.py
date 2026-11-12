@@ -688,7 +688,8 @@ class MuseEngine:
                     if (!document.querySelector('textarea')) return 'no-ta';
                     var h = document.querySelector('[data-hatch-shell-hydration-state]');
                     if (h && h.getAttribute('data-hatch-shell-hydration-state') !== 'hydrated') return 'hydrating';
-                    var b = document.body ? (document.body.innerText || '') : '';
+                    var scope = document.querySelector('main,[role="main"],[class*="chat-scroll"],[class*="hatch-chat-scroll"]') || document.body;
+                    var b = scope ? (scope.innerText || '') : '';
                     if (b.indexOf('Connecting...') !== -1) return 'connecting';
                     // Empty composers may not render Send until text has been entered.
                     if (document.querySelector('textarea').disabled) return 'input-disabled';
@@ -719,7 +720,7 @@ class MuseEngine:
                 var hasStop = !!(document.querySelector('[data-testid="hatch-composer-stop-button"]')
                     || document.querySelector('button[aria-label*="Stop" i]')
                     || document.querySelector('button[aria-label*="停止"]'));
-                var bodyTxt = document.body ? (document.body.innerText || '') : '';
+                var bodyTxt = scope ? (scope.innerText || '') : '';
                 var hasStuck = bodyTxt.indexOf('Still sending') !== -1 || bodyTxt.indexOf('Connecting...') !== -1;
                 if (hasStop || hasStuck || hasAtts) return true;
                 if (forChat) {
@@ -1259,7 +1260,11 @@ class MuseEngine:
                     var hasStop = !!(document.querySelector('[data-testid="hatch-composer-stop-button"]')
                         || document.querySelector('button[aria-label*="Stop" i]')
                         || document.querySelector('button[aria-label*="停止"]'));
-                    var tail = document.body ? (document.body.innerText||'').slice(-1200) : '';
+                    // Only inspect the active conversation. The page body also contains
+                    // sidebar/history text, which may retain an old "Still sending"
+                    // status and falsely fail a new generation.
+                    var thread = document.querySelector('main,[role="main"],[class*="chat-scroll"],[class*="hatch-chat-scroll"]') || document.body;
+                    var tail = thread ? (thread.innerText||'').slice(-1200) : '';
                     return JSON.stringify({cnt: bs.length, txt: lastTxt, stop: hasStop, tail: tail,
                         path: location.pathname || '', href: location.href || ''});
                 })()""")

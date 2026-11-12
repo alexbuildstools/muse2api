@@ -36,3 +36,23 @@ with tempfile.TemporaryDirectory() as home:
             raise AssertionError("refusal was not propagated")
     assert calls == ["one"], calls
 print("PASS: model refusal is propagated without rotating to another account")
+
+
+calls.clear()
+def delivery_failure(cookies, prompt, **kwargs):
+    calls.append(cookies["hatch_sess"])
+    raise app.MuseGenerationError(
+        "提示词未成功送达后端（Still sending / Delivery not confirmed）")
+
+with patch.object(app, "_renew_and_persist", side_effect=lambda ident, **_: app.store.get_account(ident)), \
+     patch.object(app.engine, "start"), patch.object(app.engine, "generate", side_effect=delivery_failure), \
+     patch.object(app.engine, "reset_thread"), patch.object(app.engine, "close_current_page"):
+    try:
+        app._run_generation_locked("video", "video", 30, account_id=first["id"],
+                                   deadline=app.time.monotonic() + 30)
+    except app.MuseGenerationError as exc:
+        assert "未成功送达" in str(exc)
+    else:
+        raise AssertionError("delivery failure was not propagated")
+assert calls == ["one"], calls
+print("PASS: prompt delivery failure does not rotate to another account")

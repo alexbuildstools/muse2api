@@ -66,7 +66,7 @@ if not log.handlers:
     log.addHandler(_h)
 
 CFG.ensure_dirs()
-app = FastAPI(title="muse2api", version="1.6.10")
+app = FastAPI(title="muse2api", version="1.6.11")
 
 # Cookie 助手脚本从 muse.ai 页面发起导入请求，需要放行该来源；
 # 浏览器扩展从 chrome-extension:// 发起，也一并放行。
@@ -1091,6 +1091,19 @@ def _pos(v) -> bool:
         return False
 
 
+def _is_prompt_delivery_failure(exc: BaseException) -> bool:
+    """Prompt transport failures are not evidence that the account is bad.
+
+    Retrying these failures on another account multiplies latency while the
+    shared Muse gateway, browser route, or page-state problem is unchanged.
+    """
+    return bool(re.search(
+        r"Still sending|Delivery not confirmed|正在发送|未确认送达|提示词没有发出去",
+        str(exc),
+        re.I,
+    ))
+
+
 def _run_generation(prompt: str, kind: str, timeout: int,
                     account_id: str | None = None, on_progress=None,
                     reference_image: str | None = None,
@@ -1179,6 +1192,12 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
             except MuseGenerationError as exc:
                 last_exc = exc
                 store.mark(cur_acc["id"], True, f"任务异常: {str(exc)[:60]}")
+                if _is_prompt_delivery_failure(exc):
+                    log.warning(
+                        "提示词送达失败，不切换账号重试（账号 %s）：%s",
+                        cur_acc.get("id"), exc,
+                    )
+                    break
                 try:
                     engine.reset_thread()
                 except Exception:
@@ -2509,7 +2528,10 @@ def get_keepalive_status(_=Depends(auth)):
 
 
 # ------------------------- 仓库实时更新检测、通知与一键在线升级 -------------------------
-REPO_URL = "https://github.com/czg86389-hub/muse2api"
+REPO_URL = os.environ.get(
+    "MUSE2API_REPO", "https://github.com/hubs/muse2api"
+).strip().rstrip("/")
+REPO_SLUG = REPO_URL.split("github.com/", 1)[-1].strip("/").removesuffix(".git")
 TRACKED_REPO_PATHS = [
     "app.py", "engine.py", "store.py", "cdp.py", "config.py", "proxy.py",
     "admin.html", "README.md", "version.json", "requirements.txt",
@@ -2566,9 +2588,12 @@ def _git(args: list[str], timeout: int = 30):
 
 
 def _ensure_git_repo(token: str = ""):
-    """确保 BASE_DIR 已初始化为绑定 czg86389-hub/muse2api 的 Git 仓库。"""
+    """确保 BASE_DIR 已初始化为绑定配置仓库的 Git 仓库。"""
     git_dir = os.path.join(BASE_DIR, ".git")
-    remote_url = f"https://x-access-token:{token}@github.com/czg86389-hub/muse2api.git" if token else f"{REPO_URL}.git"
+    remote_url = (
+        f"https://x-access-token:{token}@github.com/{REPO_SLUG}.git"
+        if token else f"{REPO_URL}.git"
+    )
     if not os.path.isdir(git_dir):
         _git(["init", "-b", "main"])
         _git(["remote", "add", "origin", remote_url])
@@ -2609,7 +2634,7 @@ def _silent_upgrade_worker():
 
 
 def _check_update_sync(force: bool = False, _auto_upgrade: bool = True) -> dict:
-    """检测 GitHub 官方仓库 (czg86389-hub/muse2api) 是否有新版本或新提交。
+    """检测配置的 GitHub 仓库是否有新版本或新提交。
     发现更新时在后台静默自动拉取升级，不触发前端弹窗或横幅通知。"""
     now = time.time()
     if not force and _UPDATE_CACHE["data"] and (now - _UPDATE_CACHE["ts"]) < 90:
@@ -2647,7 +2672,7 @@ def _check_update_sync(force: bool = False, _auto_upgrade: bool = True) -> dict:
     highlights_en = list(local_ver_obj.get("highlights_en") or [])
     try:
         rv = requests.get(
-            f"https://raw.githubusercontent.com/czg86389-hub/muse2api/main/version.json?t={int(now)}",
+            f"https://raw.githubusercontent.com/{REPO_SLUG}/main/version.json?t={int(now)}",
             timeout=6,
         )
         if rv.status_code == 200:
@@ -2669,7 +2694,7 @@ def _check_update_sync(force: bool = False, _auto_upgrade: bool = True) -> dict:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         resp = requests.get(
-            "https://api.github.com/repos/czg86389-hub/muse2api/commits?sha=main&per_page=5",
+            f"https://api.github.com/repos/{REPO_SLUG}/commits?sha=main&per_page=5",
             headers=headers,
             timeout=6,
         )
@@ -2764,7 +2789,7 @@ def _upgrade_from_github_sync() -> dict:
 
     if not upgraded_via:
         resp = requests.get(
-            "https://codeload.github.com/czg86389-hub/muse2api/tar.gz/refs/heads/main",
+            f"https://codeload.github.com/{REPO_SLUG}/tar.gz/refs/heads/main",
             timeout=60,
         )
         if resp.status_code != 200:
@@ -2811,14 +2836,14 @@ def _upgrade_from_github_sync() -> dict:
 @app.get("/admin/update/check")
 @app.get("/admin/repo/status")
 async def admin_check_update(force: bool = False):
-    """供所有已部署节点实时检测 GitHub 官方仓库是否有新版本更新。"""
+    """供已部署节点实时检测配置仓库是否有新版本更新。"""
     return await asyncio.to_thread(_check_update_sync, force)
 
 
 @app.post("/admin/update/upgrade")
 @app.post("/admin/repo/pull")
 async def admin_upgrade_now(payload: dict = Body(default={}), _=Depends(auth)):
-    """一键从 GitHub 官方仓库拉取最新更新并自动平滑重启服务。"""
+    """一键从配置仓库拉取最新更新并自动平滑重启服务。"""
     res = await asyncio.to_thread(_upgrade_from_github_sync)
     restart = payload.get("restart", True) if isinstance(payload, dict) else True
     if restart:

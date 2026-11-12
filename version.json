@@ -1,8 +1,10 @@
 {
-  "version": "1.6.10",
-  "updated_at": "2026-11-11",
-  "repo": "https://github.com/czg86389-hub/muse2api",
+  "version": "1.6.11",
+  "updated_at": "2026-11-12",
+  "repo": "https://github.com/hubs/muse2api",
   "highlights": [
+    "修复 Still sending / Delivery not confirmed 触发自动切号重试，避免单个任务被放大到约 100 秒。",
+    "页面状态判断限制在当前聊天区域，避免侧栏历史状态误判新任务。",
     "修复发送按钮误匹配侧栏历史、Send feedback 或 Resend 的问题，避免参考图和长提示词留在输入框未提交。",
     "首次发送、重试和发送状态检查统一定位当前输入区域，识别中英文标签、disabled、aria-disabled 和 inert 状态。",
     "继续校验实际发送及媒体成品；点击发送不等于任务完成，不把上传的参考素材当生成结果。",
@@ -10,6 +12,8 @@
     "更新服务后请强制刷新管理页。插件仍为 1.0.2、油猴脚本仍为 1.1.2；当前版本无需重装，旧扩展仍需在各浏览器个人资料中手动升级。"
   ],
   "highlights_en": [
+    "Stop Still sending / Delivery not confirmed from rotating accounts and multiplying one task into roughly 100 seconds.",
+    "Scope page-state checks to the active conversation so sidebar history cannot fail a new task.",
     "Fix send-button matching against sidebar history, Send feedback and Resend, which could leave prompts and reference attachments unsubmitted.",
     "Initial sends, retries and readiness checks share one composer-scoped locator with localized labels and disabled, aria-disabled and inert handling.",
     "Keep actual submission and generated-media verification; clicking Send is not task completion, and uploaded references are not generated results.",
