@@ -414,6 +414,7 @@ Nginx 反代需把 `client_max_body_size` 调到 200M 左右，否则大素材�
 | `MUSE2API_CHAT_TIMEOUT` | `300` | 对话生成超时上限（秒） |
 | `MUSE2API_REF_IMAGE_LOCAL_FILES` | `0` | 默认禁止读取服务器本地路径；仅可信单用户部署可显式设为 `1` 恢复 |
 | `MUSE2API_REF_IMAGE_PRIVATE_FETCH` | `0` | 默认仅允许公网 URL，并逐跳检查 DNS/重定向、固定已检查 IP、不使用环境代理；显式设为 `1` 才允许私网/本机 URL |
+| `MUSE2API_PAGE_SNAPSHOT_LOG` | `0` | 是否输出完整 Muse 页面快照日志；仅临时排查页面元素时设为 `1` |
 
 两个开关默认均为 `0`：所有生图、图像编辑、图片任务及视频接口都禁止服务器本地路径和私网/本机 URL。Data URL、有效 Base64 和公网 URL 正常使用。只有确认调用方可信且确有需要时，才显式设为 `1` 恢复对应旧能力。
 策略拒绝、下载失败、MIME 或大小不合规都会在提交任务前返回 HTTP 400，不会创建一个随后才失败的后台任务。

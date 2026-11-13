@@ -125,6 +125,11 @@ class Config:
     keepalive_disabled_accounts: bool = field(
         default_factory=lambda: _env("MUSE2API_KEEPALIVE_DISABLED_ACCOUNTS", "0").strip() != "0")
 
+    # 页面快照只用于临时排查 Muse 页面元素，内容较大，默认不写入日志。
+    # 需要定位页面结构时可显式设置 MUSE2API_PAGE_SNAPSHOT_LOG=1。
+    page_snapshot_log: bool = field(
+        default_factory=lambda: _env("MUSE2API_PAGE_SNAPSHOT_LOG", "0").strip() == "1")
+
     @property
     def data_dir(self) -> str:
         return os.path.join(self.base_dir, "data")

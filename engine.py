@@ -754,6 +754,8 @@ class MuseEngine:
 
     def _log_page_snapshot(self, stage: str, account_id: str | None = None):
         """记录当前 Muse 页面结构，不记录 Cookie、输入框值或完整提示词。"""
+        if not self.cfg.page_snapshot_log:
+            return
         try:
             raw = self.page.js(self._PAGE_SNAPSHOT_JS) if self.page else ""
             snapshot = json.loads(raw) if raw else {}
