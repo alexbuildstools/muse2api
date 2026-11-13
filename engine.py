@@ -1022,6 +1022,38 @@ class MuseEngine:
         return hasInvite(body) ? body : '';
     })()"""
 
+    _INVITE_DEBUG_JS = r"""(() => {
+        const visible = e => e && e.getClientRects().length > 0
+            && getComputedStyle(e).visibility !== 'hidden';
+        const describe = e => ({
+            testid: e.getAttribute('data-testid') || '',
+            aria: e.getAttribute('aria-label') || '',
+            title: e.getAttribute('title') || '',
+            text: (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 100),
+            visible: visible(e)
+        });
+        const inviteNodes = [...document.querySelectorAll(
+            '[data-testid*="invite" i],button,[role=button]')]
+            .filter(e => /invite|邀请|邀請/i.test(
+                [e.getAttribute('data-testid') || '', e.getAttribute('aria-label') || '',
+                 e.getAttribute('title') || '', e.innerText || e.textContent || ''].join(' ')))
+            .slice(0, 12).map(describe);
+        return JSON.stringify({
+            host: location.hostname || '', path: location.pathname || '',
+            ready: document.readyState,
+            textarea: !!document.querySelector('textarea'),
+            inviteNodes: inviteNodes,
+            bodyHasInvite: /邀请好友|邀请码|invite friends|invite code/i.test(document.body?.innerText || '')
+        });
+    })()"""
+
+    def _invite_debug(self) -> str:
+        try:
+            raw = self.page.js(self._INVITE_DEBUG_JS) if self.page else ''
+            return raw or '{}'
+        except Exception as exc:  # noqa: BLE001
+            return json.dumps({'error': str(exc)[:120]}, ensure_ascii=False)
+
     def _quota_click(self, expr: str, error: str, timeout: float = 8.0):
         deadline = time.monotonic() + timeout
         while True:
@@ -1048,24 +1080,38 @@ class MuseEngine:
         last_error = '邀请面板未返回有效数据'
         for attempt in range(2):
             try:
+                log.info('开始读取邀请码 attempt=%s/2 account=%s', attempt + 1,
+                         self.current_acc_id or '')
+                if attempt == 1:
+                    # The quota dialog can leave the React shell on a settings route.
+                    # Wait for the normal composer after navigation before looking for
+                    # the invite button; a fixed 1.2s sleep was too early on slow VPSs.
+                    self._wait_ws_ready(self.page, timeout=12.0)
                 self._quota_click(self._INVITE_BUTTON_JS, '找不到邀请入口', timeout=3.0)
+                log.info('已点击 Muse 邀请入口 account=%s', self.current_acc_id or '')
                 deadline = time.monotonic() + 6.0
                 while True:
                     raw = self.page.js(self._INVITE_TEXT_JS) or ''
                     parsed = self._parse_invite(raw)
                     if parsed.get('found'):
+                        log.info('邀请码读取成功 account=%s code_found=%s invite_left=%s',
+                                 self.current_acc_id or '', 'invite_code' in parsed,
+                                 parsed.get('invite_left', ''))
                         return parsed
                     if time.monotonic() >= deadline:
                         break
                     time.sleep(0.2)
             except Exception as exc:  # Invitation data is optional; quota must still work.
                 last_error = str(exc)[:160]
+                log.warning('邀请码读取阶段失败 attempt=%s/2 account=%s error=%s dom=%s',
+                            attempt + 1, self.current_acc_id or '', last_error,
+                            self._invite_debug())
             self._dismiss_quota_ui()
             if attempt == 0:
                 # Settings may have left the React shell on a modal route. Reload the
                 # normal chat page once so the invite trigger is mounted again.
                 self.page.send('Page.navigate', {'url': 'https://muse.ai/thread/new'})
-                time.sleep(1.2)
+                self._wait_ws_ready(self.page, timeout=12.0)
         log.warning('读取邀请码失败（不影响额度查询）: %s', last_error)
         return {}
 
