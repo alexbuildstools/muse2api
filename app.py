@@ -2508,8 +2508,13 @@ def _invite_refresh_due(account: dict, now: int | None = None) -> bool:
     quota = account.get("quota") or {}
     checked_at = int(quota.get("invite_checked_at") or 0)
     now = int(time.time()) if now is None else now
-    has_invite_data = bool(str(quota.get("invite_code") or "").strip()) or quota.get("invite_left") is not None
-    interval = CFG.invite_refresh_interval if has_invite_data else CFG.quota_refresh_interval
+    # 只有邀请码和剩余次数都读到，才算完整缓存并进入 3 天周期。
+    # 旧版本可能只保存了邀请码；这种情况必须跟随 30 分钟额度刷新补读次数。
+    has_complete_invite_data = (
+        bool(str(quota.get("invite_code") or "").strip())
+        and quota.get("invite_left") is not None
+    )
+    interval = CFG.invite_refresh_interval if has_complete_invite_data else CFG.quota_refresh_interval
     return not checked_at or now - checked_at >= interval
 
 
