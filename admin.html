@@ -360,10 +360,10 @@
       <div class="hint" data-i18n="keepalive-hint">系统已开启<b>后台每 30 分钟静默保活</b>与<b>多账号公平轮转（LRU）</b>；「测试」会真实打开 muse.ai 验证会话。</div>
       <div class="tblwrap"><table>
         <thead><tr>
-          <th>标签</th><th>账号 ID</th><th>状态</th><th>有效期</th><th>额度</th><th data-i18n="col-enabled">启用</th><th>Cookie</th>
+          <th>标签</th><th>账号 ID</th><th>状态</th><th>有效期</th><th>额度</th><th>邀请码</th><th data-i18n="col-enabled">启用</th><th>Cookie</th>
           <th>最后使用</th><th>备注</th><th style="min-width:250px">操作</th>
         </tr></thead>
-        <tbody id="poolBody"><tr><td colspan="10" class="empty">加载中…</td></tr></tbody>
+        <tbody id="poolBody"><tr><td colspan="11" class="empty">加载中…</td></tr></tbody>
       </table></div>
     </div>
   </section>
@@ -910,6 +910,7 @@ const I18N_EN = {
   "状态": "Status",
   "有效期": "Expires",
   "额度": "Quota",
+  "邀请码": "Invite code",
   "启用": "Enable",
   "最后使用": "Last used",
   "使用次数": "Use count",
@@ -1666,6 +1667,20 @@ function quotaBadge(a){
   return `<span class="badge ${cls}" title="${esc(title)}">${esc(main)}</span>${sub}`;
 }
 
+function inviteBadge(a){
+  const q = a.quota || {};
+  const code = q.invite_code || '';
+  const left = q.invite_left;
+  if (!code && left == null) return '<span class="badge mute" title="额度查询时会同时读取邀请码">未查</span>';
+  const codeEl = code
+    ? `<div class="mono" style="font-size:12px;font-weight:700;letter-spacing:.08em">${esc(code)}</div>`
+    : '';
+  const leftEl = left != null
+    ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">剩余可邀请：${left} 次</div>`
+    : '';
+  return codeEl + leftEl;
+}
+
 async function queryQuota(aid, btn){
   if (btn){ btn.disabled = true; btn.textContent = '查询中…'; }
   try{
@@ -1747,7 +1762,7 @@ function togglePoolSortDir(){
 function renderPoolRows(){
   updatePoolSortControls();
   if (!accounts.length){
-    $('poolBody').innerHTML = '<tr><td colspan="10" class="empty">还没有账号。去「获取 Cookie」页签按三步导入一个</td></tr>';
+    $('poolBody').innerHTML = '<tr><td colspan="11" class="empty">还没有账号。去「获取 Cookie」页签按三步导入一个</td></tr>';
     return;
   }
   $('poolBody').innerHTML = sortedAccounts().map(a => {
@@ -1763,6 +1778,7 @@ function renderPoolRows(){
       <td>${badge}${miss}</td>
       <td>${expiryBadge(a)}</td>
       <td>${quotaBadge(a)}</td>
+      <td>${inviteBadge(a)}</td>
       <td>${a.enabled ? '<span class="badge ok">开</span>' : '<span class="badge mute">关</span>'}</td>
       <td class="mono">${a.cookie_count}</td>
       <td class="mono" title="${a.last_used ? fmtTime(a.last_used) : ''}">${ago(a.last_used)}</td>

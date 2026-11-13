@@ -2177,7 +2177,8 @@ async def query_quota(aid: str, _=Depends(auth)):
 
     返回例：{"plan":"Free plan","weekly_reset":"Sep 30",
              "weekly_used_pct":1,"extra_left":"2B tokens left",
-             "extra_used_pct":0,"extra_expires":"never"}
+             "extra_used_pct":0,"extra_expires":"never",
+             "invite_code":"TAW0PF","invite_left":27}
     """
     acc = store.get_account(aid)
     if not acc:

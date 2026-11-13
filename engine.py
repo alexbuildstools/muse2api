@@ -992,6 +992,36 @@ class MuseEngine:
         return d ? (d.innerText || '') : '';
     })()"""
 
+    _INVITE_BUTTON_JS = r"""(() => {
+        const visible = e => e.getClientRects().length > 0
+            && getComputedStyle(e).visibility !== 'hidden';
+        const labels = ['邀请', 'Invite', 'Invite friends', '邀請'];
+        const exact = value => labels.some(label => value === label
+            || value.toLowerCase() === label.toLowerCase());
+        const b = [...document.querySelectorAll('[data-testid="hatch-invite-friends-button"]')].find(visible)
+            || [...document.querySelectorAll('button,[role=button]')].find(e => {
+            if (!visible(e)) return false;
+            const value = (e.getAttribute('aria-label') || e.textContent || '').trim();
+            return exact(value);
+        });
+        if (!b) return null;
+        const r = b.getBoundingClientRect();
+        return JSON.stringify({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)});
+    })()"""
+
+    _INVITE_TEXT_JS = r"""(() => {
+        const visible = e => e.getClientRects().length > 0
+            && getComputedStyle(e).visibility !== 'hidden';
+        const hasInvite = text => /邀请好友|邀请码|还可使用|invite friends|invite code|uses? left/i.test(text);
+        const blocks = [...document.querySelectorAll('[role=dialog],[aria-modal=true],[data-state="open"]')]
+            .filter(visible)
+            .map(e => e.innerText || '')
+            .filter(hasInvite);
+        if (blocks.length) return blocks.sort((a,b) => b.length - a.length)[0];
+        const body = document.body ? (document.body.innerText || '') : '';
+        return hasInvite(body) ? body : '';
+    })()"""
+
     def _quota_click(self, expr: str, error: str, timeout: float = 8.0):
         deadline = time.monotonic() + timeout
         while True:
@@ -1013,6 +1043,23 @@ class MuseEngine:
                                 'windowsVirtualKeyCode': 27, 'nativeVirtualKeyCode': 27})
             time.sleep(0.1)  # Let the UI finish closing before the next interaction.
 
+    def _read_invite(self) -> dict:
+        """Read the invite code and remaining invite count from Muse's invite panel."""
+        try:
+            self._quota_click(self._INVITE_BUTTON_JS, '找不到邀请入口', timeout=3.0)
+            deadline = time.monotonic() + 6.0
+            while True:
+                raw = self.page.js(self._INVITE_TEXT_JS) or ''
+                parsed = self._parse_invite(raw)
+                if parsed.get('found'):
+                    return parsed
+                if time.monotonic() >= deadline:
+                    return {}
+                time.sleep(0.2)
+        except Exception as exc:  # Invitation data is optional; quota must still work.
+            log.debug('读取邀请码失败（不影响额度查询）: %s', exc)
+            return {}
+
     def quota(self, cookies: dict, expires: dict | None = None,
               account_id: str | None = None) -> dict:
         """Read one account's quota in a fresh, disposable browser context."""
@@ -1028,6 +1075,10 @@ class MuseEngine:
             while True:
                 parsed = self._parse_quota(self.page.js(self._QUOTA_DIALOG_JS) or '')
                 if parsed['found']:
+                    self._dismiss_quota_ui()
+                    invite = self._read_invite()
+                    if invite:
+                        parsed.update(invite)
                     return parsed
                 if time.monotonic() >= deadline:
                     raise MuseGenerationError('额度面板未读到有效用量；旧缓存未覆盖')
@@ -1116,6 +1167,30 @@ class MuseEngine:
                     (amount and float(amount.group(1)) == 0)
                     or (not amount and re.search(r'^(?:无|沒有|没有|none|zero)$',
                                                   left_text.strip(), re.I)))
+        return out
+
+    @staticmethod
+    def _parse_invite(txt: str) -> dict:
+        """Parse Muse's invite panel in simplified/traditional Chinese or English."""
+        normalized = unicodedata.normalize('NFKC', txt or '')
+        lines = [ln.strip() for ln in normalized.splitlines() if ln.strip()]
+        start = next((i for i, ln in enumerate(lines) if re.search(
+            r'邀请好友|邀請好友|invite friends|invite a friend', ln, re.I)), None)
+        if start is None:
+            return {'found': False}
+        section = lines[start:start + 24]
+        text = '\n'.join(section)
+        out: dict = {'found': False}
+        remaining = re.search(
+            r'(?:还可使用|還可使用|剩余可邀请|剩餘可邀請|可使用|remaining|uses? left)'
+            r'\s*[:：]?\s*(\d+)\s*(?:次|次數|times?)?', text, re.I)
+        if remaining:
+            out['invite_left'] = int(remaining.group(1))
+        for line in section[1:]:
+            if re.fullmatch(r'(?=.*[A-Z])[A-Z0-9]{4,16}', line):
+                out['invite_code'] = line
+                break
+        out['found'] = 'invite_code' in out or 'invite_left' in out
         return out
 
     # ---------------- 附件（生成结果） ----------------

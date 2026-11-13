@@ -9,14 +9,16 @@ SOURCE = Path(__file__).resolve().parents[1] / "engine.py"
 SOURCE_BYTES = SOURCE.read_bytes()
 tree = ast.parse(SOURCE_BYTES, filename=str(SOURCE))
 engine = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MuseEngine")
-parser = next(n for n in engine.body if isinstance(n, ast.FunctionDef) and n.name == "_parse_quota")
+parsers = [n for n in engine.body if isinstance(n, ast.FunctionDef)
+           and n.name in {"_parse_quota", "_parse_invite"}]
 # Compile the actual method unchanged. Avoid importing browser dependencies or
 # constructing an engine, which could otherwise create profile directories.
 subset = ast.Module(body=[ast.ClassDef(name="MuseEngine", bases=[], keywords=[],
-                                     body=[parser], decorator_list=[])], type_ignores=[])
+                                     body=parsers, decorator_list=[])], type_ignores=[])
 namespace = {"re": re, "unicodedata": unicodedata}
 exec(compile(ast.fix_missing_locations(subset), str(SOURCE), "exec"), namespace)
 parse = namespace["MuseEngine"]._parse_quota
+parse_invite = namespace["MuseEngine"]._parse_invite
 
 
 class QuotaLocalizationTests(unittest.TestCase):
@@ -107,6 +109,13 @@ class QuotaLocalizationTests(unittest.TestCase):
     def test_percentage_upper_bound(self):
         self.fields("101% used", found=False)
         self.fields("100% used", found=True, weekly_used_pct=100)
+
+    def test_invite_code_and_remaining_count(self):
+        result = parse_invite(
+            "邀请好友\n邀请好友，只要 TA 在加入后 48 小时内通过设置兑换邀请码。\n"
+            "还可使用 27 次\nTAW0PF\n复制推荐链接")
+        self.assertEqual(result, {"found": True, "invite_code": "TAW0PF",
+                                  "invite_left": 27})
 
 
 if __name__ == "__main__":
