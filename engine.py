@@ -1078,15 +1078,19 @@ class MuseEngine:
     def _read_invite(self) -> dict:
         """Read the invite code and remaining invite count from Muse's invite panel."""
         last_error = '邀请面板未返回有效数据'
-        for attempt in range(2):
+        # The invite trigger is rendered by the main chat shell.  The quota
+        # settings dialog can be on a different route, and /thread/new does not
+        # always render the top-right invite trigger for every account/session.
+        invite_urls = ('https://muse.ai/', 'https://muse.ai/thread/new')
+        for attempt, invite_url in enumerate(invite_urls):
             try:
-                log.info('开始读取邀请码 attempt=%s/2 account=%s', attempt + 1,
-                         self.current_acc_id or '')
-                if attempt == 1:
-                    # The quota dialog can leave the React shell on a settings route.
-                    # Wait for the normal composer after navigation before looking for
-                    # the invite button; a fixed 1.2s sleep was too early on slow VPSs.
-                    self._wait_ws_ready(self.page, timeout=12.0)
+                log.info('进入 Muse 邀请读取页面 attempt=%s/2 url=%s account=%s',
+                         attempt + 1, invite_url, self.current_acc_id or '')
+                self._dismiss_quota_ui()
+                self.page.send('Page.navigate', {'url': invite_url})
+                ready = self._wait_ws_ready(self.page, timeout=12.0)
+                log.info('Muse 邀请读取页面就绪 attempt=%s ready=%s account=%s',
+                         attempt + 1, ready, self.current_acc_id or '')
                 self._quota_click(self._INVITE_BUTTON_JS, '找不到邀请入口', timeout=3.0)
                 log.info('已点击 Muse 邀请入口 account=%s', self.current_acc_id or '')
                 deadline = time.monotonic() + 6.0
@@ -1103,15 +1107,9 @@ class MuseEngine:
                     time.sleep(0.2)
             except Exception as exc:  # Invitation data is optional; quota must still work.
                 last_error = str(exc)[:160]
-                log.warning('邀请码读取阶段失败 attempt=%s/2 account=%s error=%s dom=%s',
-                            attempt + 1, self.current_acc_id or '', last_error,
+                log.warning('邀请码读取阶段失败 attempt=%s/2 url=%s account=%s error=%s dom=%s',
+                            attempt + 1, invite_url, self.current_acc_id or '', last_error,
                             self._invite_debug())
-            self._dismiss_quota_ui()
-            if attempt == 0:
-                # Settings may have left the React shell on a modal route. Reload the
-                # normal chat page once so the invite trigger is mounted again.
-                self.page.send('Page.navigate', {'url': 'https://muse.ai/thread/new'})
-                self._wait_ws_ready(self.page, timeout=12.0)
         log.warning('读取邀请码失败（不影响额度查询）: %s', last_error)
         return {}
 
