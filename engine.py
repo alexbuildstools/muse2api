@@ -1045,20 +1045,29 @@ class MuseEngine:
 
     def _read_invite(self) -> dict:
         """Read the invite code and remaining invite count from Muse's invite panel."""
-        try:
-            self._quota_click(self._INVITE_BUTTON_JS, '找不到邀请入口', timeout=3.0)
-            deadline = time.monotonic() + 6.0
-            while True:
-                raw = self.page.js(self._INVITE_TEXT_JS) or ''
-                parsed = self._parse_invite(raw)
-                if parsed.get('found'):
-                    return parsed
-                if time.monotonic() >= deadline:
-                    return {}
-                time.sleep(0.2)
-        except Exception as exc:  # Invitation data is optional; quota must still work.
-            log.debug('读取邀请码失败（不影响额度查询）: %s', exc)
-            return {}
+        last_error = '邀请面板未返回有效数据'
+        for attempt in range(2):
+            try:
+                self._quota_click(self._INVITE_BUTTON_JS, '找不到邀请入口', timeout=3.0)
+                deadline = time.monotonic() + 6.0
+                while True:
+                    raw = self.page.js(self._INVITE_TEXT_JS) or ''
+                    parsed = self._parse_invite(raw)
+                    if parsed.get('found'):
+                        return parsed
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.2)
+            except Exception as exc:  # Invitation data is optional; quota must still work.
+                last_error = str(exc)[:160]
+            self._dismiss_quota_ui()
+            if attempt == 0:
+                # Settings may have left the React shell on a modal route. Reload the
+                # normal chat page once so the invite trigger is mounted again.
+                self.page.send('Page.navigate', {'url': 'https://muse.ai/thread/new'})
+                time.sleep(1.2)
+        log.warning('读取邀请码失败（不影响额度查询）: %s', last_error)
+        return {}
 
     def quota(self, cookies: dict, expires: dict | None = None,
               account_id: str | None = None, read_invite: bool = False) -> dict:
@@ -1078,9 +1087,9 @@ class MuseEngine:
                     if read_invite:
                         self._dismiss_quota_ui()
                         invite = self._read_invite()
-                        parsed['invite_checked_at'] = int(time.time())
                         if invite:
                             parsed.update(invite)
+                            parsed['invite_checked_at'] = int(time.time())
                     return parsed
                 if time.monotonic() >= deadline:
                     raise MuseGenerationError('额度面板未读到有效用量；旧缓存未覆盖')

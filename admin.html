@@ -911,6 +911,9 @@ const I18N_EN = {
   "有效期": "Expires",
   "额度": "Quota",
   "邀请码": "Invite code",
+  "展开": "Expand",
+  "收起": "Collapse",
+  "额度查询时会同时读取邀请码": "The invite code is read together with quota",
   "启用": "Enable",
   "最后使用": "Last used",
   "使用次数": "Use count",
@@ -1671,14 +1674,30 @@ function inviteBadge(a){
   const q = a.quota || {};
   const code = q.invite_code || '';
   const left = q.invite_left;
-  if (!code && left == null) return '<span class="badge mute" title="额度查询时会同时读取邀请码">未查</span>';
+  const id = `invite-detail-${a.id}`;
   const codeEl = code
     ? `<div class="mono" style="font-size:12px;font-weight:700;letter-spacing:.08em">${esc(code)}</div>`
-    : '';
+    : '<div>邀请码：—</div>';
   const leftEl = left != null
     ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">剩余可邀请：${left} 次</div>`
     : '';
-  return codeEl + leftEl;
+  const detail = code || left != null
+    ? `<button class="ghost mini" data-invite-toggle="${esc(a.id)}" onclick="toggleInvite('${esc(a.id)}')">展开</button>`
+      + `<div id="${id}" style="display:none;margin-top:4px">${codeEl}${leftEl}`
+      + (code ? `<button class="ghost mini" style="margin-top:4px" onclick="copyInvite('${esc(a.id)}')">复制邀请码</button>` : '')
+      + `</div>`
+    : '<span class="badge mute" title="额度查询时会同时读取邀请码">未查</span>';
+  return `<div>${detail}</div><div style="display:flex;gap:4px;margin-top:4px">`
+    + `<button class="ghost mini" onclick="queryInvite('${esc(a.id)}', this)">获取邀请码</button>`
+    + `<button class="ghost mini" onclick="editInvite('${esc(a.id)}')">手动填写</button></div>`;
+}
+function toggleInvite(aid){
+  const detail = document.getElementById(`invite-detail-${aid}`);
+  const button = document.querySelector(`[data-invite-toggle="${aid}"]`);
+  if (!detail) return;
+  const open = detail.style.display !== 'none';
+  detail.style.display = open ? 'none' : 'block';
+  if (button) button.textContent = open ? '展开' : '收起';
 }
 
 async function queryQuota(aid, btn){
@@ -1696,6 +1715,55 @@ async function queryQuota(aid, btn){
     toast('额度查询失败：' + e.message, 'bad');
     if (btn){ btn.disabled = false; btn.textContent = '额度'; }
   }
+}
+
+async function queryInvite(aid, btn){
+  if (btn){ btn.disabled = true; btn.textContent = '获取中…'; }
+  try{
+    const q = await api(`/admin/accounts/${aid}/invite`, {method:'POST'});
+    if (q.invite_code || q.invite_left != null){
+      const left = q.invite_left != null ? `，剩余 ${q.invite_left} 次` : '';
+      toast(`邀请码：${q.invite_code || '—'}${left}`, 'ok');
+    }else{
+      toast('Muse 邀请面板未读到邀请码，请稍后重试或手动填写', 'warn');
+    }
+    loadPool();
+  }catch(e){
+    toast('邀请码获取失败：' + e.message, 'bad');
+  }finally{
+    if (btn){ btn.disabled = false; btn.textContent = '获取邀请码'; }
+  }
+}
+
+async function copyInvite(aid){
+  const account = accounts.find(a => a.id === aid);
+  const code = account && account.quota ? account.quota.invite_code : '';
+  await copyText(code);
+}
+
+async function editInvite(aid){
+  const account = accounts.find(a => a.id === aid);
+  const q = account && account.quota ? account.quota : {};
+  const code = window.prompt('请输入邀请码（留空可清除）：', q.invite_code || '');
+  if (code === null) return;
+  const leftText = window.prompt('请输入剩余可邀请次数（留空可清除）：',
+                                 q.invite_left == null ? '' : String(q.invite_left));
+  if (leftText === null) return;
+  const trimmed = leftText.trim();
+  let left = null;
+  if (trimmed){
+    if (!/^\\d+$/.test(trimmed)) return toast('剩余次数必须是非负整数', 'warn');
+    left = Number(trimmed);
+    if (!Number.isSafeInteger(left)) return toast('剩余次数超出安全范围', 'warn');
+  }
+  try{
+    await api(`/admin/accounts/${aid}/invite`, {
+      method:'PATCH',
+      body: JSON.stringify({invite_code: code.trim(), invite_left: left})
+    });
+    toast('邀请码信息已保存', 'ok');
+    loadPool();
+  }catch(e){ toast('保存邀请码失败：' + e.message, 'bad'); }
 }
 
 /* ================= 有效期显示 ================= */

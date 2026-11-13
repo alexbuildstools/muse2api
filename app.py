@@ -626,6 +626,11 @@ class AccountPatch(BaseModel):
     proxy: AccountProxy | None = None
 
 
+class InvitePatch(BaseModel):
+    invite_code: str | None = None
+    invite_left: int | None = Field(default=None, ge=0)
+
+
 class ProxyTestRequest(BaseModel):
     proxy: AccountProxy
 
@@ -2215,6 +2220,67 @@ async def query_quota(aid: str, _=Depends(auth)):
         raise HTTPException(502, f"额度查询失败: {exc}") from exc
 
 
+@app.post("/admin/accounts/{aid}/invite")
+async def query_invite(aid: str, _=Depends(auth)):
+    """强制打开该账号的 Muse 邀请面板，读取邀请码与剩余次数。"""
+    acc = store.get_account(aid)
+    if not acc:
+        raise HTTPException(404, "账号不存在")
+    if not acc.get("cookies"):
+        raise HTTPException(400, "该账号没有 cookie")
+
+    def _probe():
+        with GEN_LOCK, _account_operation(aid) as acc:
+            engine.start()
+            previous = acc.get("quota") or {}
+            q = engine.quota(acc["cookies"], acc.get("cookies_exp"), account_id=aid,
+                             read_invite=True)
+            # 邀请面板是可选数据：读取失败时保留上一次自动/手动值，
+            # 不让一次页面结构异常把已有邀请码清空。
+            invite_found = "invite_code" in q or "invite_left" in q
+            q = _merge_invite_cache(q, previous, invite_found)
+            q["checked_at"] = int(time.time())
+            if invite_found:
+                q["invite_source"] = "auto"
+            store.update_account(aid, quota=q)
+            return q
+
+    try:
+        return await asyncio.to_thread(_probe)
+    except HTTPException:
+        raise
+    except MuseAuthError as exc:
+        store.mark(aid, False, str(exc)[:200])
+        raise HTTPException(401, str(exc)) from exc
+    except MuseGenerationError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"邀请码查询失败: {exc}") from exc
+
+
+@app.patch("/admin/accounts/{aid}/invite")
+def patch_invite(aid: str, req: InvitePatch, _=Depends(auth)):
+    """保存人工补录的邀请码与剩余次数；传空值可清除对应字段。"""
+    with ACCOUNT_POOL.cond:
+        existing = store.get_account(aid)
+        if not existing:
+            raise HTTPException(404, "账号不存在")
+        quota = dict(existing.get("quota") or {})
+        code = (req.invite_code or "").strip().upper()
+        if code:
+            quota["invite_code"] = code
+        else:
+            quota.pop("invite_code", None)
+        if req.invite_left is None:
+            quota.pop("invite_left", None)
+        else:
+            quota["invite_left"] = req.invite_left
+        quota["invite_checked_at"] = int(time.time())
+        quota["invite_source"] = "manual"
+        account = store.update_account(aid, quota=quota)
+        return {"ok": True, "account": store.public_account(account)}
+
+
 @app.post("/admin/quota")
 async def query_any_quota(_=Depends(auth)):
     """用当前最久未用的可用账号查一次额度（同池账号共享同一 muse.ai 计划的
@@ -2443,9 +2509,13 @@ def _invite_refresh_due(account: dict, now: int | None = None) -> bool:
 
 def _merge_invite_cache(quota: dict, previous: dict | None, refresh: bool) -> dict:
     """Keep the last invite data when this quota refresh is intentionally skipped."""
-    if refresh or not previous:
+    # A refresh can be attempted but still return no invite fields when Muse's
+    # panel is delayed/changed. Preserve the last known value in that case.
+    if refresh and ("invite_code" in quota or "invite_left" in quota):
         return quota
-    for key in ("invite_code", "invite_left", "invite_checked_at"):
+    if not previous:
+        return quota
+    for key in ("invite_code", "invite_left", "invite_checked_at", "invite_source"):
         if key in previous:
             quota[key] = previous[key]
     return quota
