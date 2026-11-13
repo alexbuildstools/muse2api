@@ -1633,15 +1633,17 @@ function quotaBadge(a){
     return '<span class="badge mute" title="还没查过。点「操作」里的「额度」实时查询">未查</span>';
   }
   const pct = (q.weekly_used_pct != null) ? q.weekly_used_pct : null;
-  const cls = pct == null ? 'info' : pct < 50 ? 'ok' : pct < 80 ? 'warn' : 'bad';
+  const exhausted = q.exhausted === true;
+  const cls = exhausted ? 'bad' : pct == null ? 'info' : pct < 50 ? 'ok' : pct < 80 ? 'warn' : 'bad';
   const plan = (q.plan || '').replace(/\s*plan\s*$/i, '') || '—';
   let title = `计划：${q.plan || '?'}`;
   if (q.weekly_reset) title += `\n周限额重置：${q.weekly_reset}`;
   if (pct != null) title += `\n周用量：已用 ${pct}%`;
   if (q.extra_left) title += `\n额外代币：剩 ${q.extra_left}（已用 ${q.extra_used_pct ?? '?'}%）`;
   if (q.checked_at) title += `\n查询时间：${fmtTime(q.checked_at)}`;
+  if (exhausted) title += '\n已确认额度耗尽，生成任务会跳过此账号';
   if (q.checked_at && Date.now()/1000 - q.checked_at > 3600) title += '\n额度数据已超过 1 小时，需重新查询';
-  const main = pct != null ? `${plan} · 已用 ${pct}%` : plan;
+  const main = exhausted ? `${plan} · 额度不足` : pct != null ? `${plan} · 已用 ${pct}%` : plan;
   const age = q.checked_at ? `<div class="mono" style="font-size:10px;color:var(--muted);margin-top:2px">查询 ${ago(q.checked_at)}</div>` : '';
   const sub = (q.extra_left ? `<div class="mono" style="font-size:11px;color:var(--muted);margin-top:2px">+${esc(q.extra_left)}</div>` : '') + age;
   return `<span class="badge ${cls}" title="${esc(title)}">${esc(main)}</span>${sub}`;

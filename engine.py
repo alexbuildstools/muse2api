@@ -1062,7 +1062,8 @@ class MuseEngine:
             out['weekly_reset'] = reset.group(1).strip()
 
         extra_at = next((i for i, ln in enumerate(lines) if re.match(
-            r'^(?:(?:Additional|Extra)\s+tokens|(?:額外|额外)(?:的)?(?:符元|符記|代幣|代币|令牌|憑證|凭证|tokens))',
+            r'^(?:(?:Additional|Extra)\s+(?:tokens?|usage)|'
+            r'(?:額外|额外)(?:的)?(?:使用额度|使用量|符元|符記|代幣|代币|令牌|憑證|凭证|tokens?))',
             ln, re.I)), len(lines))
 
         def percentage(line):
@@ -1081,7 +1082,8 @@ class MuseEngine:
             if value is not None:
                 out['weekly_used_pct'] = value
                 break
-        for ln in lines[extra_at:]:
+        extra_lines = lines[extra_at:]
+        for ln in extra_lines:
             value = percentage(ln)
             if value is not None:
                 out['extra_used_pct'] = value
@@ -1089,10 +1091,31 @@ class MuseEngine:
                 if left:
                     out['extra_left'] = left.group(1).strip()
                 break
+        if 'extra_left' not in out:
+            for ln in extra_lines:
+                left = re.search(
+                    r'\(([^)]*(?:left|remaining|剩余|餘|余)[^)]*)\)', ln, re.I)
+                if left:
+                    out['extra_left'] = left.group(1).strip()
+                    break
         if re.search(r'Never expires|永不過期|永不过期', text, re.I):
             out['extra_expires'] = 'never'
         # A plan label alone is not a successful quota read. Preserve old cache.
         out['found'] = 'weekly_used_pct' in out
+        if out['found']:
+            weekly = out.get('weekly_used_pct')
+            extra = out.get('extra_used_pct')
+            if weekly is not None and weekly < 100:
+                out['exhausted'] = False
+            elif extra is not None:
+                out['exhausted'] = extra >= 100
+            elif out.get('extra_left'):
+                left_text = str(out['extra_left'])
+                amount = re.search(r'(?<![\d.])(\d+(?:\.\d+)?)', left_text)
+                out['exhausted'] = bool(
+                    (amount and float(amount.group(1)) == 0)
+                    or (not amount and re.search(r'^(?:无|沒有|没有|none|zero)$',
+                                                  left_text.strip(), re.I)))
         return out
 
     # ---------------- 附件（生成结果） ----------------

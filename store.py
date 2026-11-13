@@ -153,16 +153,25 @@ class Store:
             _write(self.cfg.accounts_file, self.accounts)
             return len(self.accounts) != n
 
+    @staticmethod
+    def quota_exhausted(account: dict) -> bool:
+        return (account.get("quota") or {}).get("exhausted") is True
+
     def pick_account(self, preferred_id: str | None = None, rotate: bool = True,
                      force_rotate: bool = False, exclude_id: str | None = None,
                      exclude_ids: set[str] | list[str] | None = None,
-                     record_use: bool = True) -> dict | None:
+                     record_use: bool = True, ignore_quota: bool = False) -> dict | None:
         """选择可用账号：优先复用当前已预热的健康账号（减少切号重连耗时），每满 15 次或遇错自动轮转。
         exclude_ids: 需要排除的账号 ID 集合（例如正在被其他并发线程占用的账号）。"""
         with _LOCK:
             live = [a for a in self.accounts if a.get("enabled", True) and a.get("cookies")]
             if not live:
                 return None
+            if not ignore_quota:
+                quota_ok = [a for a in live if not self.quota_exhausted(a)]
+                if not quota_ok:
+                    return None
+                live = quota_ok
             blocked = set(exclude_ids or [])
             if exclude_id:
                 blocked.add(exclude_id)
@@ -177,7 +186,8 @@ class Store:
                     live = [a for a in live if a["id"] != exclude_id] or live
             if preferred_id and not rotate and not force_rotate:
                 for a in live:
-                    if a["id"] == preferred_id and a.get("ok") is not False:
+                    if (a["id"] == preferred_id and a.get("ok") is not False
+                            and not self.quota_exhausted(a)):
                         self._sticky_id = preferred_id
                         self._sticky_count = 1
                         if record_use:

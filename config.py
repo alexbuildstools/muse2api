@@ -125,6 +125,10 @@ class Config:
     keepalive_disabled_accounts: bool = field(
         default_factory=lambda: _env("MUSE2API_KEEPALIVE_DISABLED_ACCOUNTS", "0").strip() != "0")
 
+    # 额度刷新与保活共用后台轮询；默认每 30 分钟重新读取一次 Muse 额度。
+    quota_refresh_interval: int = field(
+        default_factory=lambda: max(60, int(_env("MUSE2API_QUOTA_REFRESH_INTERVAL", "1800"))))
+
     # 页面快照只用于临时排查 Muse 页面元素，内容较大，默认不写入日志。
     # 需要定位页面结构时可显式设置 MUSE2API_PAGE_SNAPSHOT_LOG=1。
     page_snapshot_log: bool = field(

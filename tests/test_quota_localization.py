@@ -51,6 +51,21 @@ class QuotaLocalizationTests(unittest.TestCase):
                     weekly_used_pct=12.5, extra_used_pct=0, extra_expires="never",
                     extra_left="剩余 20 亿令牌")
 
+    def test_simplified_additional_usage_and_exhaustion_state(self):
+        result = self.fields(
+            "设置\n通用\n使用情况\n免费版\n每周限额将在 11月14日重置\n已使用 100%\n"
+            "额外的使用额度\n从不过期\n已使用 56%（剩余 8.8 亿个词元）",
+            found=True, weekly_used_pct=100, extra_used_pct=56,
+            extra_left="剩余 8.8 亿个词元", exhausted=False)
+        self.assertEqual(result["exhausted"], False)
+
+    def test_exhausted_when_weekly_and_extra_are_used_up(self):
+        result = self.fields(
+            "Usage\nFree plan\n100% used\nAdditional usage\n100% used (0 tokens left)",
+            found=True, weekly_used_pct=100, extra_used_pct=100,
+            extra_left="0 tokens left", exhausted=True)
+        self.assertEqual(result["exhausted"], True)
+
     def test_zero_is_success_and_integer(self):
         for text in ["0% used", "已用 0%", "已使用 0%", "已用 ０％"]:
             with self.subTest(text=text):

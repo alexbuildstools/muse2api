@@ -152,6 +152,9 @@ class AccountPoolManager:
                     if not acc or not acc.get("enabled", True):
                         raise MuseAuthError(f"指定账号 {account_id} 不存在或已禁用")
                     if account_id not in self.busy_accounts:
+                        if self.store.quota_exhausted(acc):
+                            raise MuseGenerationError(
+                                f"指定账号 {account_id} 额度已耗尽，请刷新额度或更换账号")
                         self.busy_accounts.add(account_id)
                         return acc
                 else:
@@ -170,6 +173,8 @@ class AccountPoolManager:
                 live = [a for a in self.store.accounts if a.get("enabled", True) and a.get("cookies")]
                 if not live:
                     raise MuseAuthError("没有可用账号，请先在管理页面导入 cookie")
+                if all(self.store.quota_exhausted(a) for a in live):
+                    raise MuseGenerationError("所有账号额度已耗尽，请等待额度重置或补充额外额度")
 
                 self.cond.wait(timeout=min(remaining, 0.5))
 
@@ -2103,7 +2108,7 @@ async def test_account(aid: str, _=Depends(auth)):
                         quota_error = "额度面板未读到有效数据；旧缓存未覆盖"
                         quota = None
                 except Exception as exc:  # noqa: BLE001
-                    quota_error = f"{type(exc).__name__}；额度缓存未更新"
+                    quota_error = f"{type(exc).__name__}: {str(exc)[:180]}；额度缓存未更新"
                 store.mark(aid, True, "会话有效" + ("；额度读取失败" if quota_error else ""))
                 return {"ok": True, "message": "会话有效，可正常生成",
                         "synced": synced, "quota": quota,
@@ -2150,7 +2155,8 @@ def update_cookies(aid: str, payload: dict = Body(...), _=Depends(auth)):
 
 @app.post("/admin/relogin")
 def relogin(_=Depends(auth)):
-    acc = store.pick_account(rotate=True)
+    # 管理员重新登录是维护操作，即使账号被额度过滤也允许执行。
+    acc = store.pick_account(rotate=True, ignore_quota=True)
     if not acc:
         raise HTTPException(400, "没有可用账号")
     try:
@@ -2206,7 +2212,7 @@ async def query_quota(aid: str, _=Depends(auth)):
 async def query_any_quota(_=Depends(auth)):
     """用当前最久未用的可用账号查一次额度（同池账号共享同一 muse.ai 计划的
     通常只有一人使用时够用；多账号时建议按账号查）。"""
-    acc = store.pick_account(rotate=True)
+    acc = store.pick_account(rotate=True, ignore_quota=True)
     if not acc:
         raise HTTPException(400, "没有可用账号")
     return await query_quota(acc["id"], _)
@@ -2448,10 +2454,16 @@ def _probe_account_sync(aid: str, check_quota: bool = False) -> dict:
                         raise MuseGenerationError("额度面板未读到有效数据；旧缓存未覆盖")
                     quota["checked_at"] = int(time.time())
                     store.update_account(aid, quota=quota)
+                    log.info("【额度】账号 %s (%s) 刷新成功 weekly=%s extra=%s left=%s exhausted=%s",
+                             acc.get("label", aid), aid, quota.get("weekly_used_pct"),
+                             quota.get("extra_used_pct"), quota.get("extra_left"),
+                             quota.get("exhausted"))
                 except Exception as qe:  # noqa: BLE001
                     log.warning("读取账号 %s 额度失败: %s", aid, qe)
                 finally:
                     GEN_LOCK.release()
+            elif check_quota:
+                log.info("【额度】账号 %s (%s) 暂未刷新：生成锁正在使用", acc.get("label", aid), aid)
             updated = store.get_account(aid) or {}
             return {
                 "ok": True,
@@ -2474,7 +2486,7 @@ def _probe_account_sync(aid: str, check_quota: bool = False) -> dict:
 
 
 async def run_keepalive_all(force: bool = False) -> dict:
-    """执行账号保活：force=True 时强制刷新所有启用账号，否则刷新临期/未检账号并保持 VM 热备。"""
+    """执行账号保活，并按配置周期刷新所有启用账号的 Muse 额度。"""
     async with KEEPALIVE_LOCK:
         now = int(time.time())
         KEEPALIVE_STATE["running"] = True
@@ -2490,9 +2502,13 @@ async def run_keepalive_all(force: bool = False) -> dict:
                 label = a.get("label", aid)
                 exp_at = a.get("expires_at")
                 last_ka = a.get("last_keepalive") or 0
+                quota_checked_at = int((a.get("quota") or {}).get("checked_at") or 0)
+                quota_due = force or not quota_checked_at or (
+                    now - quota_checked_at >= CFG.quota_refresh_interval)
 
                 needs_run = (
                     force
+                    or quota_due
                     or not last_ka
                     or ((now - last_ka) > 6 * 3600 and
                         (not exp_at or exp_at - now < 36 * 3600 or
@@ -2502,8 +2518,9 @@ async def run_keepalive_all(force: bool = False) -> dict:
                     skipped.append({"id": aid, "label": label, "reason": "会话充足且近期已保活"})
                     continue
 
-                log.info("【自动保活】正在为账号 %s (%s) 执行静默续期与 VM 唤醒...", label, aid)
-                res = await asyncio.to_thread(_probe_account_sync, aid, False)
+                log.info("【自动保活】正在为账号 %s (%s) 执行静默续期与 VM 唤醒，刷新额度=%s...",
+                         label, aid, quota_due)
+                res = await asyncio.to_thread(_probe_account_sync, aid, quota_due)
                 results.append(res)
                 log.info("【自动保活】账号 %s 执行结果: ok=%s expires_at=%s", label, res.get("ok"), res.get("expires_at"))
                 await asyncio.sleep(0.5)
