@@ -1013,7 +1013,8 @@ class MuseEngine:
         const visible = e => e.getClientRects().length > 0
             && getComputedStyle(e).visibility !== 'hidden';
         const hasInvite = text => /邀请好友|邀请码|还可使用|invite friends|invite code|uses? left/i.test(text);
-        const blocks = [...document.querySelectorAll('[role=dialog],[aria-modal=true],[data-state="open"]')]
+        const blocks = [...document.querySelectorAll(
+            '[role=dialog],[aria-modal=true],[data-state="open"],[data-pel-impression="invite_friends_impression"]')]
             .filter(visible)
             .map(e => e.innerText || '')
             .filter(hasInvite);
@@ -1237,7 +1238,9 @@ class MuseEngine:
         text = '\n'.join(section)
         out: dict = {'found': False}
         remaining = re.search(
-            r'(?:还可使用|還可使用|剩余可邀请|剩餘可邀請|可使用|remaining|uses? left)'
+            r'(?:还\s*可\s*使\s*用|還\s*可\s*使\s*用|'
+            r'剩\s*余\s*可\s*邀\s*请|剩\s*餘\s*可\s*邀\s*請|'
+            r'可\s*使\s*用|remaining|uses?\s*left)'
             r'\s*[:：]?\s*(\d+)\s*(?:次|次數|times?)?', text, re.I)
         if remaining:
             out['invite_left'] = int(remaining.group(1))

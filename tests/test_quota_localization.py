@@ -117,6 +117,13 @@ class QuotaLocalizationTests(unittest.TestCase):
         self.assertEqual(result, {"found": True, "invite_code": "TAW0PF",
                                   "invite_left": 27})
 
+    def test_invite_remaining_count_survives_dom_line_wrap(self):
+        result = parse_invite(
+            "邀请好友\n邀请好友，只要 TA 在加入后 48 小时内通过设置兑换邀请码。\n"
+            "还可使\n用 27 次\nTAW0PF")
+        self.assertEqual(result.get("invite_left"), 27)
+        self.assertEqual(result.get("invite_code"), "TAW0PF")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
