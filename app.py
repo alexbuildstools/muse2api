@@ -2110,6 +2110,7 @@ async def test_account(aid: str, _=Depends(auth)):
                                          read_invite=invite_due)
                     if quota.get("found"):
                         quota = _merge_invite_cache(quota, acc.get("quota"), invite_due)
+                        _mark_invite_refresh_attempt(quota, invite_due)
                         quota["checked_at"] = int(time.time())
                         store.update_account(aid, quota=quota)
                     else:
@@ -2203,6 +2204,7 @@ async def query_quota(aid: str, _=Depends(auth)):
             if not q.get("found"):
                 raise MuseGenerationError("额度面板未读到有效数据；旧缓存未覆盖")
             q = _merge_invite_cache(q, acc.get("quota"), invite_due)
+            _mark_invite_refresh_attempt(q, invite_due)
             q["checked_at"] = int(time.time())
             store.update_account(aid, quota=q)
             return q
@@ -2239,6 +2241,7 @@ async def query_invite(aid: str, _=Depends(auth)):
             # 不让一次页面结构异常把已有邀请码清空。
             invite_found = "invite_code" in q or "invite_left" in q
             q = _merge_invite_cache(q, previous, invite_found)
+            _mark_invite_refresh_attempt(q, True)
             q["checked_at"] = int(time.time())
             if invite_found:
                 q["invite_source"] = "auto"
@@ -2501,10 +2504,25 @@ KEEPALIVE_STATE = {
 
 
 def _invite_refresh_due(account: dict, now: int | None = None) -> bool:
-    """Invite data changes rarely; refresh it only after the configured interval."""
-    checked_at = int((account.get("quota") or {}).get("invite_checked_at") or 0)
+    """Refresh empty invite data with quota; refresh known data every few days."""
+    quota = account.get("quota") or {}
+    checked_at = int(quota.get("invite_checked_at") or 0)
     now = int(time.time()) if now is None else now
-    return not checked_at or now - checked_at >= CFG.invite_refresh_interval
+    has_invite_data = bool(str(quota.get("invite_code") or "").strip()) or quota.get("invite_left") is not None
+    interval = CFG.invite_refresh_interval if has_invite_data else CFG.quota_refresh_interval
+    return not checked_at or now - checked_at >= interval
+
+
+def _mark_invite_refresh_attempt(quota: dict, attempted: bool, now: int | None = None) -> dict:
+    """Record an invite lookup attempt, including an empty result.
+
+    An empty Muse invite panel must not be retried on every manual quota click;
+    it should retry on the next normal 30-minute quota cycle. Once data exists,
+    _invite_refresh_due switches to the longer invite interval.
+    """
+    if attempted:
+        quota["invite_checked_at"] = int(time.time()) if now is None else now
+    return quota
 
 
 def _merge_invite_cache(quota: dict, previous: dict | None, refresh: bool) -> dict:
@@ -2548,6 +2566,7 @@ def _probe_account_sync(aid: str, check_quota: bool = False) -> dict:
                     if not quota.get("found"):
                         raise MuseGenerationError("额度面板未读到有效数据；旧缓存未覆盖")
                     quota = _merge_invite_cache(quota, acc.get("quota"), invite_due)
+                    _mark_invite_refresh_attempt(quota, invite_due)
                     quota["checked_at"] = int(time.time())
                     store.update_account(aid, quota=quota)
                     log.info("【额度】账号 %s (%s) 刷新成功 weekly=%s extra=%s left=%s exhausted=%s",
