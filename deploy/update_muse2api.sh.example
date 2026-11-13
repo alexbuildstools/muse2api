@@ -11,9 +11,19 @@ MEDIA_TARGET="${MUSE2API_MEDIA_TARGET:-/mnt/mydisk/muse2api-media}"
 MEDIA_MOUNTPOINT="${MUSE2API_MEDIA_MOUNTPOINT:-/mnt/mydisk}"
 UPDATE_SCRIPT_PATH="${MUSE2API_UPDATE_SCRIPT_PATH:-/root/update_muse2api.sh}"
 AUTO_SYNC_UPDATE_SCRIPT="${MUSE2API_AUTO_SYNC_UPDATE_SCRIPT:-1}"
+SYNC_CONNECTIVITY_MONITOR="${MUSE2API_SYNC_CONNECTIVITY_MONITOR:-1}"
 
 log() {
   echo "[muse2api-update] $*"
+}
+
+sync_connectivity_monitor() {
+  if [[ "$SYNC_CONNECTIVITY_MONITOR" != "1" ||
+        ! -f "$APP_DIR/deploy/install-connectivity-monitor.sh" ]]; then
+    return 0
+  fi
+  log "同步连接监控脚本和定时器..."
+  bash "$APP_DIR/deploy/install-connectivity-monitor.sh" >/dev/null
 }
 
 require_media_disk() {
@@ -107,6 +117,7 @@ fi
 systemctl restart "$SERVICE"
 for _ in $(seq 1 20); do
   if curl --connect-timeout 2 --max-time 5 -fsS "$HEALTH_URL" >/dev/null; then
+    sync_connectivity_monitor
     echo "更新完成：$(git log -1 --oneline)"
     exit 0
   fi

@@ -2,6 +2,8 @@
 Description=muse2api Python API
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=10min
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -13,8 +15,8 @@ Environment=MUSE2API_PORT=18610
 Environment=MUSE2API_CDP_PORT=19210
 EnvironmentFile=-/home/muse2api/.env
 ExecStart=/home/muse2api/.venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 18610
-Restart=always
-RestartSec=2
+Restart=on-failure
+RestartSec=5
 LimitNOFILE=65535
 
 [Install]

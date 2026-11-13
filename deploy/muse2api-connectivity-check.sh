@@ -18,11 +18,19 @@ DNS_SERVERS="${MUSE2API_DNS_SERVERS:-1.1.1.1 8.8.8.8}"
 DNS_INTERFACE="${MUSE2API_DNS_INTERFACE:-}"
 AUTO_REPAIR="${MUSE2API_AUTO_REPAIR:-1}"
 RESTART_ON_RECOVERY="${MUSE2API_RESTART_ON_RECOVERY:-1}"
+LOCAL_HEALTH_FAILURES="${MUSE2API_LOCAL_HEALTH_FAILURES:-3}"
+LOCAL_HEALTH_INTERVAL="${MUSE2API_LOCAL_HEALTH_INTERVAL:-3}"
+RESTART_WAIT_SECONDS="${MUSE2API_RESTART_WAIT_SECONDS:-60}"
+RESTART_COOLDOWN_SECONDS="${MUSE2API_RESTART_COOLDOWN_SECONDS:-600}"
+STATE_DIR="${MUSE2API_CONNECTIVITY_STATE_DIR:-/run/muse2api-connectivity}"
+LAST_RESTART_FILE="$STATE_DIR/last-restart"
 
 if [[ $EUID -ne 0 ]]; then
   echo "必须以 root 运行" >&2
   exit 2
 fi
+
+mkdir -p "$STATE_DIR"
 
 log() {
   echo "[muse2api-connectivity] $*"
@@ -67,11 +75,56 @@ check_hatch() {
 }
 
 check_local_service() {
-  if curl -fsS --connect-timeout 2 --max-time 5 "$HEALTH_URL" >/dev/null 2>&1; then
-    return 0
-  fi
-  log "本地服务健康检查失败 url=$HEALTH_URL"
+  curl -fsS --connect-timeout 2 --max-time 5 "$HEALTH_URL" >/dev/null 2>&1
+}
+
+check_local_service_repeatedly() {
+  local attempt
+  for ((attempt = 1; attempt <= LOCAL_HEALTH_FAILURES; attempt++)); do
+    if check_local_service; then
+      if (( attempt > 1 )); then
+        log "本地服务健康检查恢复 attempt=$attempt/$LOCAL_HEALTH_FAILURES"
+      fi
+      return 0
+    fi
+    log "本地服务健康检查失败 attempt=$attempt/$LOCAL_HEALTH_FAILURES url=$HEALTH_URL"
+    if (( attempt < LOCAL_HEALTH_FAILURES )); then
+      sleep "$LOCAL_HEALTH_INTERVAL"
+    fi
+  done
   return 1
+}
+
+wait_for_local_service() {
+  local elapsed
+  for ((elapsed = 1; elapsed <= RESTART_WAIT_SECONDS; elapsed++)); do
+    if check_local_service; then
+      log "本地服务已恢复 elapsed=${elapsed}s"
+      return 0
+    fi
+    if (( elapsed == 1 || elapsed % 10 == 0 )); then
+      log "等待本地服务恢复 elapsed=${elapsed}s/${RESTART_WAIT_SECONDS}s"
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+restart_allowed() {
+  local now last
+  now="$(date +%s)"
+  if [[ -r "$LAST_RESTART_FILE" ]]; then
+    last="$(cat "$LAST_RESTART_FILE" 2>/dev/null || true)"
+    if [[ "$last" =~ ^[0-9]+$ ]] && (( now - last < RESTART_COOLDOWN_SECONDS )); then
+      log "仍在自动重启冷却期，跳过重启 remaining=$((RESTART_COOLDOWN_SECONDS - now + last))s"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+mark_restart() {
+  date +%s > "$LAST_RESTART_FILE"
 }
 
 repair_dns() {
@@ -118,12 +171,17 @@ if ! check_hatch; then
   fi
 fi
 
-if ! check_local_service; then
+if ! check_local_service_repeatedly; then
   log "尝试恢复本地服务 service=$SERVICE"
+  if ! restart_allowed; then
+    log "本地服务连续失败但未执行重启，请检查 service=$SERVICE"
+    exit 1
+  fi
+  log "重启前状态 $(systemctl show "$SERVICE" -p ActiveState -p SubState -p MainPID -p NRestarts --value 2>/dev/null | paste -sd, -)"
+  mark_restart
   systemctl restart "$SERVICE"
-  sleep 2
-  check_local_service || {
-    log "本地服务重启后仍不健康"
+  wait_for_local_service || {
+    log "本地服务重启后仍不健康 service=$SERVICE wait=${RESTART_WAIT_SECONDS}s"
     exit 1
   }
 fi

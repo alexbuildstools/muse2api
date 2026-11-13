@@ -1,10 +1,10 @@
 [Unit]
-Description=Run muse2api Muse connectivity check every 5 minutes
+Description=Run muse2api Muse connectivity check every minute
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=5min
-RandomizedDelaySec=30s
+OnUnitActiveSec=1min
+RandomizedDelaySec=15s
 Persistent=true
 
 [Install]
