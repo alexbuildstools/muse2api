@@ -2099,9 +2099,12 @@ async def test_account(aid: str, _=Depends(auth)):
                 quota = None
                 quota_error = None
                 try:  # Session validity and quota readability are independent results.
+                    invite_due = _invite_refresh_due(acc)
                     quota = engine.quota(acc["cookies"],
-                                         acc.get("cookies_exp"), account_id=aid)
+                                         acc.get("cookies_exp"), account_id=aid,
+                                         read_invite=invite_due)
                     if quota.get("found"):
+                        quota = _merge_invite_cache(quota, acc.get("quota"), invite_due)
                         quota["checked_at"] = int(time.time())
                         store.update_account(aid, quota=quota)
                     else:
@@ -2189,9 +2192,12 @@ async def query_quota(aid: str, _=Depends(auth)):
     def _probe():
         with GEN_LOCK, _account_operation(aid) as acc:
             engine.start()
-            q = engine.quota(acc["cookies"], acc.get("cookies_exp"), account_id=aid)
+            invite_due = _invite_refresh_due(acc)
+            q = engine.quota(acc["cookies"], acc.get("cookies_exp"), account_id=aid,
+                             read_invite=invite_due)
             if not q.get("found"):
                 raise MuseGenerationError("额度面板未读到有效数据；旧缓存未覆盖")
+            q = _merge_invite_cache(q, acc.get("quota"), invite_due)
             q["checked_at"] = int(time.time())
             store.update_account(aid, quota=q)
             return q
@@ -2428,6 +2434,23 @@ KEEPALIVE_STATE = {
 }
 
 
+def _invite_refresh_due(account: dict, now: int | None = None) -> bool:
+    """Invite data changes rarely; refresh it only after the configured interval."""
+    checked_at = int((account.get("quota") or {}).get("invite_checked_at") or 0)
+    now = int(time.time()) if now is None else now
+    return not checked_at or now - checked_at >= CFG.invite_refresh_interval
+
+
+def _merge_invite_cache(quota: dict, previous: dict | None, refresh: bool) -> dict:
+    """Keep the last invite data when this quota refresh is intentionally skipped."""
+    if refresh or not previous:
+        return quota
+    for key in ("invite_code", "invite_left", "invite_checked_at"):
+        if key in previous:
+            quota[key] = previous[key]
+    return quota
+
+
 def _probe_account_sync(aid: str, check_quota: bool = False) -> dict:
     """Verify the upstream session through this account's saved route."""
     try:
@@ -2449,10 +2472,12 @@ def _probe_account_sync(aid: str, check_quota: bool = False) -> dict:
             if check_quota and GEN_LOCK.acquire(blocking=False):
                 try:
                     engine.start()
+                    invite_due = _invite_refresh_due(acc)
                     quota = engine.quota(res["cookies"], res["cookies_exp"],
-                                         account_id=aid)
+                                         account_id=aid, read_invite=invite_due)
                     if not quota.get("found"):
                         raise MuseGenerationError("额度面板未读到有效数据；旧缓存未覆盖")
+                    quota = _merge_invite_cache(quota, acc.get("quota"), invite_due)
                     quota["checked_at"] = int(time.time())
                     store.update_account(aid, quota=quota)
                     log.info("【额度】账号 %s (%s) 刷新成功 weekly=%s extra=%s left=%s exhausted=%s",

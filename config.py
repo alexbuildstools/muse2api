@@ -129,6 +129,11 @@ class Config:
     quota_refresh_interval: int = field(
         default_factory=lambda: max(60, int(_env("MUSE2API_QUOTA_REFRESH_INTERVAL", "1800"))))
 
+    # 邀请码和剩余邀请次数变化不频繁；默认每天最多读取一次，避免每次额度刷新
+    # 都额外打开 Muse 邀请面板。
+    invite_refresh_interval: int = field(
+        default_factory=lambda: max(3600, int(_env("MUSE2API_INVITE_REFRESH_INTERVAL", "86400"))))
+
     # 页面快照只用于临时排查 Muse 页面元素，内容较大，默认不写入日志。
     # 需要定位页面结构时可显式设置 MUSE2API_PAGE_SNAPSHOT_LOG=1。
     page_snapshot_log: bool = field(

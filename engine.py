@@ -1061,7 +1061,7 @@ class MuseEngine:
             return {}
 
     def quota(self, cookies: dict, expires: dict | None = None,
-              account_id: str | None = None) -> dict:
+              account_id: str | None = None, read_invite: bool = False) -> dict:
         """Read one account's quota in a fresh, disposable browser context."""
         # Muse's Settings menu can remain in a half-closed React state after a read.
         # A disposable context is slower, but prevents consecutive reads from
@@ -1075,10 +1075,12 @@ class MuseEngine:
             while True:
                 parsed = self._parse_quota(self.page.js(self._QUOTA_DIALOG_JS) or '')
                 if parsed['found']:
-                    self._dismiss_quota_ui()
-                    invite = self._read_invite()
-                    if invite:
-                        parsed.update(invite)
+                    if read_invite:
+                        self._dismiss_quota_ui()
+                        invite = self._read_invite()
+                        parsed['invite_checked_at'] = int(time.time())
+                        if invite:
+                            parsed.update(invite)
                     return parsed
                 if time.monotonic() >= deadline:
                     raise MuseGenerationError('额度面板未读到有效用量；旧缓存未覆盖')
