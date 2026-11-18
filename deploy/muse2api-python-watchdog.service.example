@@ -1,0 +1,11 @@
+[Unit]
+Description=Muse2API Python conservative health watchdog
+After=network-online.target muse2api-python.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/etc/default/muse2api-connectivity
+ExecStart=/usr/local/sbin/muse2api-python-watchdog
+TimeoutStartSec=60

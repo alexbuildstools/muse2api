@@ -192,6 +192,22 @@ IMAGE_TASK_LOCK = threading.Lock()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
+def _generation_busy() -> bool:
+    """Whether stopping the process now could interrupt user work."""
+    task_busy = store.active_generation_count() > 0
+    with ACCOUNT_POOL.cond:
+        account_busy = bool(ACCOUNT_POOL.busy_accounts)
+    return GEN_LOCK.locked() or account_busy or task_busy
+
+
+def _wait_for_generation_idle(timeout: int = 180) -> bool:
+    """Wait for a graceful restart window without killing active generations."""
+    deadline = time.monotonic() + max(0, timeout)
+    while _generation_busy() and time.monotonic() < deadline:
+        time.sleep(1)
+    return not _generation_busy()
+
+
 def _bind_account_proxy(account: dict):
     """Pin the selected account's route for the whole operation, including retries."""
     if hasattr(engine, "_ensure_local"):
@@ -1259,8 +1275,23 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
 
 # ------------------------- 基础接口 -------------------------
 @app.get("/healthz")
-def healthz():
+async def healthz():
+    """Cheap liveness probe; do not consume FastAPI's worker thread pool."""
     return {"status": "ok", "time": int(time.time())}
+
+
+@app.get("/restart-readyz")
+async def restart_readyz():
+    """Tell an external watchdog whether a restart can be done safely.
+
+    This intentionally stays unauthenticated like /healthz so a local
+    systemd watchdog can use it without storing the API key.  It exposes only
+    a count and no task contents.
+    """
+    active_tasks = store.active_generation_count()
+    busy = _generation_busy()
+    return {"status": "busy" if busy else "safe",
+            "active_generations": active_tasks}
 
 
 @app.get("/readyz")
@@ -2817,12 +2848,9 @@ def _silent_upgrade_worker():
     try:
         res = _upgrade_from_github_sync()
         if res.get("ok"):
-            for _ in range(180):
-                with ACCOUNT_POOL.cond:
-                    busy = bool(ACCOUNT_POOL.busy_accounts)
-                if not busy:
-                    break
-                time.sleep(1)
+            if not _wait_for_generation_idle(180):
+                log.warning("检测到更新，但生成任务仍繁忙，已跳过自动重启；请在空闲后手动重启")
+                return
             time.sleep(0.5)
             try:
                 engine.stop()
@@ -3051,6 +3079,9 @@ async def admin_upgrade_now(payload: dict = Body(default={}), _=Depends(auth)):
     if restart:
         def _delayed_restart():
             time.sleep(0.5)
+            if not _wait_for_generation_idle(180):
+                log.warning("手动更新后的重启已延期：生成任务持续繁忙超过 180 秒")
+                return
             try:
                 engine.stop()
             except Exception:

@@ -319,6 +319,20 @@ class Store:
                        key=lambda t: t.get("created_at") or 0, reverse=True)
         return items[:limit]
 
+    def active_generation_count(self) -> int:
+        """Return queued/processing image and video tasks.
+
+        This is used by restart guards.  A queued task is also considered
+        active: restarting at that point would make startup mark it failed
+        even though generation has not begun yet.
+        """
+        with _LOCK:
+            return sum(
+                task.get("kind") in ("image", "video")
+                and task.get("status") in ("queued", "processing")
+                for task in self.tasks.values()
+            )
+
     def delete_task(self, tid: str) -> bool:
         with _LOCK:
             if tid in self.tasks:

@@ -12,6 +12,7 @@ fi
 
 SERVICE="${MUSE2API_SERVICE:-muse2api-python.service}"
 HEALTH_URL="${MUSE2API_HEALTH_URL:-http://127.0.0.1:18610/healthz}"
+RESTART_READY_URL="${MUSE2API_RESTART_READY_URL:-http://127.0.0.1:18610/restart-readyz}"
 HATCH_URL="${MUSE2API_HATCH_URL:-https://hatch.metaaivm.com/v1/noise}"
 HATCH_HOST="${MUSE2API_HATCH_HOST:-hatch.metaaivm.com}"
 DNS_SERVERS="${MUSE2API_DNS_SERVERS:-1.1.1.1 8.8.8.8}"
@@ -76,6 +77,12 @@ check_hatch() {
 
 check_local_service() {
   curl -fsS --connect-timeout 2 --max-time 5 "$HEALTH_URL" >/dev/null 2>&1
+}
+
+check_restart_ready() {
+  local body
+  body="$(curl -fsS --connect-timeout 2 --max-time 3 "$RESTART_READY_URL" 2>/dev/null || true)"
+  grep -Eq '"status"[[:space:]]*:[[:space:]]*"safe"' <<<"$body"
 }
 
 check_local_service_repeatedly() {
@@ -152,6 +159,10 @@ restart_service() {
     log "DNS 修复后网络已恢复，按配置不重启服务"
     return 0
   fi
+  if systemctl is-active --quiet "$SERVICE" && ! check_restart_ready; then
+    log "服务仍有生成任务或无法确认安全重启，跳过重启 service=$SERVICE"
+    return 0
+  fi
   log "DNS 修复后网络恢复，重启服务 service=$SERVICE"
   systemctl try-restart "$SERVICE"
 }
@@ -176,6 +187,10 @@ if ! check_local_service_repeatedly; then
   if ! restart_allowed; then
     log "本地服务连续失败但未执行重启，请检查 service=$SERVICE"
     exit 1
+  fi
+  if systemctl is-active --quiet "$SERVICE" && ! check_restart_ready; then
+    log "本地服务仍有生成任务或无法确认安全重启，延期处理 service=$SERVICE"
+    exit 0
   fi
   log "重启前状态 $(systemctl show "$SERVICE" -p ActiveState -p SubState -p MainPID -p NRestarts --value 2>/dev/null | paste -sd, -)"
   mark_restart

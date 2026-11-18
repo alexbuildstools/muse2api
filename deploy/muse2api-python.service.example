@@ -17,6 +17,7 @@ EnvironmentFile=-/home/muse2api/.env
 ExecStart=/home/muse2api/.venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 18610
 Restart=on-failure
 RestartSec=5
+TimeoutStopSec=180
 LimitNOFILE=65535
 
 [Install]

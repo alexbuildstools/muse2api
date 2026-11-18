@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Conservative local watchdog.  A health timeout is not enough to justify
+# killing a process that may be generating media: first require repeated
+# failures, then require the application to report that a restart is safe.
+
+SERVICE="${MUSE2API_SERVICE:-muse2api-python.service}"
+HEALTH_URL="${MUSE2API_HEALTH_URL:-http://127.0.0.1:18610/healthz}"
+RESTART_READY_URL="${MUSE2API_RESTART_READY_URL:-http://127.0.0.1:18610/restart-readyz}"
+FAILURES="${MUSE2API_WATCHDOG_FAILURES:-3}"
+INTERVAL="${MUSE2API_WATCHDOG_INTERVAL:-5}"
+
+log() {
+  echo "[muse2api-watchdog] $*"
+}
+
+healthy() {
+  curl -fsS --connect-timeout 2 --max-time 5 "$HEALTH_URL" >/dev/null 2>&1
+}
+
+restart_safe() {
+  local body
+  body="$(curl -fsS --connect-timeout 2 --max-time 3 "$RESTART_READY_URL" 2>/dev/null || true)"
+  grep -Eq '"status"[[:space:]]*:[[:space:]]*"safe"' <<<"$body"
+}
+
+for ((attempt = 1; attempt <= FAILURES; attempt++)); do
+  if healthy; then
+    exit 0
+  fi
+  log "health check failed attempt=$attempt/$FAILURES url=$HEALTH_URL"
+  if (( attempt < FAILURES )); then
+    sleep "$INTERVAL"
+  fi
+done
+
+# If systemd already considers the unit down, its own Restart=on-failure is
+# the correct recovery path; start it only when necessary.  If it is still
+# active, fail closed when the safe-restart endpoint is unavailable or busy.
+if systemctl is-active --quiet "$SERVICE"; then
+  if ! restart_safe; then
+    log "service is active but restart is not safe; deferring restart service=$SERVICE"
+    exit 0
+  fi
+else
+  log "service is not active; requesting recovery service=$SERVICE"
+fi
+
+log "health check failed and restart is safe; restarting service=$SERVICE"
+systemctl restart "$SERVICE"

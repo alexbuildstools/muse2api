@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Muse2API Python conservative health watchdog
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+RandomizedDelaySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
