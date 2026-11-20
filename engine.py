@@ -1243,6 +1243,10 @@ class MuseEngine:
             r'(\d+)\s*(?:次|次數|times?)\s*(?:剩余|剩餘|left|remaining)', text, re.I)
         if not remaining:
             remaining = re.search(
+                r'(\d+)\s+(?:invites?|invitations?|uses?)\s+(?:left|remaining)',
+                text, re.I)
+        if not remaining:
+            remaining = re.search(
                 r'(?:还\s*可\s*使\s*用|還\s*可\s*使\s*用|'
                 r'剩\s*余\s*可\s*邀\s*请|剩\s*餘\s*可\s*邀\s*請|'
                 r'邀请(?:次数|名额)?\s*剩\s*余|邀請(?:次數|名額)?\s*剩\s*餘|'

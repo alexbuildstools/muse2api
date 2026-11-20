@@ -128,7 +128,9 @@ class QuotaLocalizationTests(unittest.TestCase):
         for text in (
                 "邀请好友\n剩余 21 次\n5K5VPP",
                 "邀请好友\n21 次剩余\n5K5VPP",
-                "Invite friends\nYou have 12 invitations left\n5K5VPP"):
+                "Invite friends\nYou have 12 invitations left\n5K5VPP",
+                "Invite friends\n12 invites left\n5K5VPP",
+                "Invite friends\n12 uses remaining\n5K5VPP"):
             with self.subTest(text=text):
                 result = parse_invite(text)
                 self.assertEqual(result.get("invite_left"), 21 if "21" in text else 12)
