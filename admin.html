@@ -1683,17 +1683,18 @@ function inviteBadge(a){
   const q = a.quota || {};
   const code = q.invite_code || '';
   const left = q.invite_left;
+  const leftText = left != null ? `剩余可邀请：${left} 次` : '剩余次数：未读取';
   if (!code && left == null){
-    return '<span class="badge mute" title="额度查询时会自动读取邀请码和剩余次数">未查</span>';
+    return '<span class="badge mute" title="额度查询时会自动读取邀请码和剩余次数">未查</span>'
+      + `<button class="ghost mini" style="margin-top:4px" onclick="queryInvite('${esc(a.id)}', this)">刷新次数</button>`;
   }
   const codeEl = code
     ? `<div class="mono" style="font-size:12px;font-weight:700;letter-spacing:.08em">${esc(code)}</div>`
     : '<div class="mono" style="font-size:12px;color:var(--muted)">邀请码：—</div>';
-  const leftEl = left != null
-    ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">剩余可邀请：${left} 次</div>`
-    : '';
+  const leftEl = `<div style="font-size:11px;color:${left != null ? 'var(--muted)' : 'var(--warn)'};margin-top:2px">${leftText}</div>`;
   return `<div>${codeEl}${leftEl}`
     + (code ? `<button class="ghost mini" style="margin-top:4px" onclick="copyInvite('${esc(a.id)}')">复制邀请码</button>` : '')
+    + `<button class="ghost mini" style="margin-top:4px;margin-left:4px" onclick="queryInvite('${esc(a.id)}', this)">刷新次数</button>`
     + `</div>`;
 }
 
@@ -1703,7 +1704,8 @@ async function queryQuota(aid, btn){
     const q = await api(`/admin/accounts/${aid}/quota`, {method:'POST'});
     if (q.found){
       const extra = q.extra_left ? `，${formatTokenLeft(q.extra_left)}` : '';
-      toast(`额度：${q.plan || '?'}，周用量已用 ${q.weekly_used_pct ?? '?'}%${extra}`, 'ok');
+      const invite = q.invite_left != null ? `，邀请剩余 ${q.invite_left} 次` : '';
+      toast(`额度：${q.plan || '?'}，周用量已用 ${q.weekly_used_pct ?? '?'}%${extra}${invite}`, 'ok');
     }else{
       toast('设置面板里没有读到额度数据（可能是页面结构变了）', 'warn');
     }
@@ -1711,6 +1713,25 @@ async function queryQuota(aid, btn){
   }catch(e){
     toast('额度查询失败：' + e.message, 'bad');
     if (btn){ btn.disabled = false; btn.textContent = '额度'; }
+  }
+}
+
+async function queryInvite(aid, btn){
+  if (btn){ btn.disabled = true; btn.textContent = '读取中…'; }
+  try{
+    const q = await api(`/admin/accounts/${aid}/invite`, {method:'POST'});
+    if (q.invite_left != null){
+      toast(`邀请剩余 ${q.invite_left} 次${q.invite_code ? `，邀请码 ${q.invite_code}` : ''}`, 'ok');
+    }else if (q.invite_code){
+      toast(`已读到邀请码 ${q.invite_code}，但 Muse 未返回剩余次数`, 'warn');
+    }else{
+      toast('Muse 邀请面板未读到剩余次数，请稍后重试', 'warn');
+    }
+    loadPool();
+  }catch(e){
+    toast('邀请次数读取失败：' + e.message, 'bad');
+  }finally{
+    if (btn){ btn.disabled = false; btn.textContent = '刷新次数'; }
   }
 }
 

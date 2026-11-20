@@ -1012,7 +1012,7 @@ class MuseEngine:
     _INVITE_TEXT_JS = r"""(() => {
         const visible = e => e.getClientRects().length > 0
             && getComputedStyle(e).visibility !== 'hidden';
-        const hasInvite = text => /邀请好友|邀请码|还可使用|invite friends|invite code|uses? left/i.test(text);
+        const hasInvite = text => /邀请好友|邀请码|邀请次数|邀请名额|还可使用|还剩|剩余|invite friends|invite code|invitation|invites?|uses? left/i.test(text);
         const blocks = [...document.querySelectorAll(
             '[role=dialog],[aria-modal=true],[data-state="open"],[data-pel-impression="invite_friends_impression"]')]
             .filter(visible)
@@ -1231,17 +1231,33 @@ class MuseEngine:
         normalized = unicodedata.normalize('NFKC', txt or '')
         lines = [ln.strip() for ln in normalized.splitlines() if ln.strip()]
         start = next((i for i, ln in enumerate(lines) if re.search(
-            r'邀请好友|邀請好友|invite friends|invite a friend', ln, re.I)), None)
+            r'邀请(?:好友|碼|码|次数|名额)?|邀請(?:好友|碼|次數|名額)?|'
+            r'invite friends|invite a friend|invitation', ln, re.I)), None)
         if start is None:
             return {'found': False}
         section = lines[start:start + 24]
         text = '\n'.join(section)
+        compact = re.sub(r'\s+', '', text)
         out: dict = {'found': False}
         remaining = re.search(
-            r'(?:还\s*可\s*使\s*用|還\s*可\s*使\s*用|'
-            r'剩\s*余\s*可\s*邀\s*请|剩\s*餘\s*可\s*邀\s*請|'
-            r'可\s*使\s*用|remaining|uses?\s*left)'
-            r'\s*[:：]?\s*(\d+)\s*(?:次|次數|times?)?', text, re.I)
+            r'(\d+)\s*(?:次|次數|times?)\s*(?:剩余|剩餘|left|remaining)', text, re.I)
+        if not remaining:
+            remaining = re.search(
+                r'(?:还\s*可\s*使\s*用|還\s*可\s*使\s*用|'
+                r'剩\s*余\s*可\s*邀\s*请|剩\s*餘\s*可\s*邀\s*請|'
+                r'邀请(?:次数|名额)?\s*剩\s*余|邀請(?:次數|名額)?\s*剩\s*餘|'
+                r'还\s*剩|還\s*剩|剩\s*余|剩\s*餘|'
+                r'可\s*使\s*用|remaining|uses?\s*left)'
+                r'\s*[:：]?\s*(\d+)\s*(?:次|次數|times?)?', text, re.I)
+        if not remaining:
+            remaining = re.search(
+                r'(?:还可使用|還可使用|剩余可邀请|剩餘可邀請|邀请(?:次数|名额)?剩余|'
+                r'邀請(?:次數|名額)?剩餘|还剩|還剩|剩余|剩餘|可使用)'
+                r'[:：]?(\d+)(?:次|次數)?', compact, re.I)
+        if not remaining:
+            remaining = re.search(
+                r'(?:you\s+have|with)\s+(\d+)\s+(?:invites?|invitations?)\s*(?:left|remaining)?',
+                text, re.I)
         if remaining:
             out['invite_left'] = int(remaining.group(1))
         for line in section[1:]:
