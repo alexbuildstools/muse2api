@@ -58,9 +58,7 @@ with tempfile.TemporaryDirectory(prefix='muse-layout-',dir=Path.home()) as home:
    raise AssertionError('Condition failed: '+expr)
   wait("document.querySelectorAll('#poolBody tr').length===8")
   measure="""(()=>{const m=document.querySelector('main'),w=document.querySelector('#poolBody').closest('.tblwrap'),n=document.querySelector('#poolBody td.ellip');return {viewport:innerWidth,mainWidth:m.getBoundingClientRect().width,bodyWidth:document.documentElement.scrollWidth,tableWidth:w.clientWidth,tableScroll:w.scrollWidth,noteDisplay:getComputedStyle(n).display,noteWhiteSpace:getComputedStyle(n).whiteSpace,buttons:document.querySelectorAll('#poolBody tr:first-child button').length}})()"""
-  for lang in (['zh'] if args.probe_only else ['zh','en']):
-   if lang=='en':
-    page.js("localStorage.setItem('muse2api_lang','en');location.reload()");wait("document.querySelectorAll('#poolBody tr').length===8")
+  for lang in ['zh']:
    for width in ([1920] if args.probe_only else [2560,1920,1536,1440,1366,1280,768,390,320]):
     page.send('Emulation.setDeviceMetricsOverride',{'width':width,'height':1080,'deviceScaleFactor':1,'mobile':False})
     time.sleep(.15);m=page.js(measure);print(json.dumps({'lang':lang,**m}),flush=True)
@@ -86,7 +84,7 @@ with tempfile.TemporaryDirectory(prefix='muse-layout-',dir=Path.home()) as home:
     wait("$('proxyServer').value==='' && $('proxyPassword').value===''")
   if not args.probe_only:
    assert not page.js('window.__errors')
-   print('PASS: full-width layout, desktop controls, contained mobile scrolling, Chinese/English and test-without-saving')
+   print('PASS: full-width layout, desktop controls, contained mobile scrolling, Chinese-only UI and test-without-saving')
  finally:
   if page:
    try:page.send('Browser.close')
