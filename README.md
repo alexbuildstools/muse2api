@@ -127,6 +127,10 @@ Upload one product photo and get talking-head sales videos, story-style ad short
    sudo systemctl enable --now muse2api
    ```
 
+   如果使用 `/home/muse2api/.venv` 的 Python 部署模板，则安装
+   `deploy/muse2api-python.service.example` 为 `muse2api-python.service`，并把
+   `MUSE2API_SERVICE` 设置为该服务名。
+
 4. **Nginx 反向代理配置（重要：防止 502 超时与流式卡顿）**：
    如使用 Nginx / 宝塔 / 1Panel 反代，务必将 `proxy_read_timeout` 调大至 `600s` 并关闭 `proxy_buffering`（详见 `deploy/nginx.example.conf`）：
    ```nginx
@@ -152,6 +156,18 @@ Upload one product photo and get talking-head sales videos, story-style ad short
    sudo journalctl -u muse2api-connectivity-check.service -n 50 --no-pager
    ```
    生产服务器如果使用其他服务名、端口或网卡，请先编辑 `/etc/default/muse2api-connectivity`。
+
+6. **启用每天定时重启（推荐）**：
+   ```bash
+   cd /home/muse2api
+   sudo bash deploy/install-daily-restart.sh
+   ```
+   默认按服务器本地时间每天约 **04:00** 执行，systemd 会随机延迟最多 5 分钟。
+   定时任务会先请求 `/restart-readyz`；如果仍有生图/视频任务，或无法确认安全状态，
+   本次会跳过，避免中断任务。查看日志：
+   ```bash
+   sudo journalctl -u muse2api-daily-restart.service -n 50 --no-pager
+   ```
 
 服务器迁移请参阅：[docs/MIGRATE.md](docs/MIGRATE.md)。备份脚本会包含账号 Cookie、任务数据和 `.env`，生成的压缩包只能安全传输，不能提交到 Git。
 

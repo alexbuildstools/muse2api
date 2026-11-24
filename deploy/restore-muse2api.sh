@@ -114,6 +114,9 @@ systemctl restart muse2api-python.service
 if [[ -f /etc/systemd/system/muse2api-connectivity-check.timer ]]; then
   systemctl enable --now muse2api-connectivity-check.timer
 fi
+if [[ -f /etc/systemd/system/muse2api-daily-restart.timer ]]; then
+  systemctl enable --now muse2api-daily-restart.timer
+fi
 
 echo "等待健康检查..."
 for _ in $(seq 1 30); do

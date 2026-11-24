@@ -1,0 +1,11 @@
+[Unit]
+Description=Restart the Muse2API service once per day
+After=network-online.target muse2api-python.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/etc/default/muse2api-connectivity
+ExecStart=/usr/local/sbin/muse2api-daily-restart
+TimeoutStartSec=180

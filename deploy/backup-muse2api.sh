@@ -108,7 +108,9 @@ for unit in \
   muse2api-python.service \
   muse2api.service \
   muse2api-connectivity-check.service \
-  muse2api-connectivity-check.timer; do
+  muse2api-connectivity-check.timer \
+  muse2api-daily-restart.service \
+  muse2api-daily-restart.timer; do
   if [[ -f "/etc/systemd/system/$unit" ]]; then
     cp -a "/etc/systemd/system/$unit" "$WORK_DIR/systemd/$unit"
   fi

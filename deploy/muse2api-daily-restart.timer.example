@@ -1,0 +1,11 @@
+[Unit]
+Description=Restart Muse2API once per day
+
+[Timer]
+# Server local time. Change this value if another maintenance window is preferred.
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

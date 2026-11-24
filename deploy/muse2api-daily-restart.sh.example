@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Restart the API once per day, but never interrupt an active generation.
+# This script is intended to run from a systemd timer as root.
+
+CONFIG_FILE="${MUSE2API_CONNECTIVITY_CONFIG:-/etc/default/muse2api-connectivity}"
+if [[ -r "$CONFIG_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$CONFIG_FILE"
+fi
+
+SERVICE="${MUSE2API_DAILY_RESTART_SERVICE:-${MUSE2API_SERVICE:-muse2api-python.service}}"
+HEALTH_URL="${MUSE2API_DAILY_RESTART_HEALTH_URL:-${MUSE2API_HEALTH_URL:-http://127.0.0.1:18610/healthz}}"
+RESTART_READY_URL="${MUSE2API_DAILY_RESTART_READY_URL:-${MUSE2API_RESTART_READY_URL:-http://127.0.0.1:18610/restart-readyz}}"
+WAIT_SECONDS="${MUSE2API_DAILY_RESTART_WAIT_SECONDS:-60}"
+
+log() {
+  echo "[muse2api-daily-restart] $*"
+}
+
+restart_safe() {
+  local body
+  body="$(curl -fsS --connect-timeout 2 --max-time 3 "$RESTART_READY_URL" 2>/dev/null || true)"
+  grep -Eq '"status"[[:space:]]*:[[:space:]]*"safe"' <<<"$body"
+}
+
+healthy() {
+  curl -fsS --connect-timeout 2 --max-time 5 "$HEALTH_URL" >/dev/null 2>&1
+}
+
+wait_for_health() {
+  local elapsed
+  for ((elapsed = 1; elapsed <= WAIT_SECONDS; elapsed++)); do
+    if healthy; then
+      log "服务已恢复 elapsed=${elapsed}s service=$SERVICE"
+      return 0
+    fi
+    if (( elapsed == 1 || elapsed % 10 == 0 )); then
+      log "等待服务恢复 elapsed=${elapsed}s/${WAIT_SECONDS}s service=$SERVICE"
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+if systemctl is-active --quiet "$SERVICE" && ! restart_safe; then
+  log "检测到服务仍有生成任务或无法确认安全重启，跳过本次定时重启 service=$SERVICE"
+  exit 0
+fi
+
+log "开始每日定时重启 service=$SERVICE"
+systemctl restart "$SERVICE"
+wait_for_health || {
+  log "重启后健康检查失败 service=$SERVICE wait=${WAIT_SECONDS}s"
+  exit 1
+}
