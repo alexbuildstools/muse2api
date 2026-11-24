@@ -429,6 +429,8 @@ Nginx 反代需把 `client_max_body_size` 调到 200M 左右，否则大素材�
 | `MUSE2API_IMAGE_TIMEOUT` | `240` | 生图超时上限（秒） |
 | `MUSE2API_VIDEO_TIMEOUT` | `600` | 生视频超时上限（秒） |
 | `MUSE2API_CHAT_TIMEOUT` | `300` | 对话生成超时上限（秒） |
+| `MUSE2API_STALE_TASK_TIMEOUT` | `900` | 异步生图/视频任务超过该秒数仍未结束时，发送取消信号、释放账号与浏览器上下文并标记失败 |
+| `MUSE2API_STALE_TASK_REAPER_INTERVAL` | `15` | 卡死任务回收检查间隔（秒） |
 | `MUSE2API_REF_IMAGE_LOCAL_FILES` | `0` | 默认禁止读取服务器本地路径；仅可信单用户部署可显式设为 `1` 恢复 |
 | `MUSE2API_REF_IMAGE_PRIVATE_FETCH` | `0` | 默认仅允许公网 URL，并逐跳检查 DNS/重定向、固定已检查 IP、不使用环境代理；显式设为 `1` 才允许私网/本机 URL |
 | `MUSE2API_PAGE_SNAPSHOT_LOG` | `0` | 是否输出完整 Muse 页面快照日志；仅临时排查页面元素时设为 `1` |

@@ -104,6 +104,13 @@ class Config:
     chat_timeout: int = field(default_factory=lambda: int(_env("MUSE2API_CHAT_TIMEOUT", "300")))
     max_concurrency: int = field(default_factory=lambda: max(1, int(_env("MUSE2API_CONCURRENCY", "8"))))
 
+    # 异步图/视频任务的兜底回收。正常任务先按自身 timeout 结束；如果后台线程、
+    # 页面或上游连接没有按预期退出，超过这个时间后由守护线程发出取消信号并清理状态。
+    stale_task_timeout: int = field(
+        default_factory=lambda: max(60, int(_env("MUSE2API_STALE_TASK_TIMEOUT", "900"))))
+    stale_task_reaper_interval: int = field(
+        default_factory=lambda: max(5, int(_env("MUSE2API_STALE_TASK_REAPER_INTERVAL", "15"))))
+
     # 参考图输入默认只允许调用方直接提供数据和公网 URL。
     # 仅可信单用户部署可显式设为 1 恢复服务器本地文件或私网抓取。
     ref_image_local_files: bool = field(

@@ -293,6 +293,7 @@ class Store:
             t = {"id": tid, "object": "task", "kind": kind, "prompt": prompt,
                  "status": "queued", "created_at": int(time.time()),
                  "updated_at": int(time.time()), "result": None, "error": None,
+                 "started_at": None, "reclaimed_at": None,
                  # The account is bound as soon as a worker acquires it.  Keeping
                  # these fields on queued/failed tasks makes account-level failures
                  # diagnosable instead of only showing the account on success.

@@ -139,10 +139,12 @@ class AccountPoolManager:
 
     def acquire(self, account_id: str | None = None, preferred_id: str | None = None,
                 rotate: bool = True, force_rotate: bool = False,
-                timeout: float = 60.0, record_use: bool = True) -> dict:
+                timeout: float = 60.0, record_use: bool = True, stop_event=None) -> dict:
         deadline = time.monotonic() + timeout
         with self.cond:
             while True:
+                if stop_event is not None and stop_event.is_set():
+                    raise TaskReclaimedError("任务卡死超过阈值，已回收并清理浏览器状态，请重新提交")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise MuseGenerationError("等待空闲账号超时，当前所有账号均处于繁忙中")
@@ -190,6 +192,117 @@ GEN_LOCK = ConcurrencyLock(limit=CFG.max_concurrency)
 ACCOUNT_POOL = AccountPoolManager(store)
 IMAGE_TASK_LOCK = threading.Lock()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+class TaskReclaimedError(MuseGenerationError):
+    """A stale asynchronous task was cancelled by the local task reaper."""
+
+
+TASK_RUNTIME_LOCK = threading.RLock()
+TASK_RUNTIMES: dict[str, dict] = {}
+
+
+def _task_reclaim_message(timeout: int | float) -> str:
+    return f"任务超过 {int(timeout)} 秒未完成，已回收并清理浏览器状态，请重新提交"
+
+
+def _register_task_runtime(task_id: str, kind: str) -> dict:
+    runtime = {
+        "task_id": task_id,
+        "kind": kind,
+        "stop_event": threading.Event(),
+        "thread": None,
+        "reclaimed": False,
+    }
+    with TASK_RUNTIME_LOCK:
+        TASK_RUNTIMES[task_id] = runtime
+    return runtime
+
+
+def _unregister_task_runtime(task_id: str) -> dict | None:
+    with TASK_RUNTIME_LOCK:
+        return TASK_RUNTIMES.pop(task_id, None)
+
+
+def _update_task_if_active(task_id: str, **changes):
+    """Serialize terminal worker writes against the stale-task reaper."""
+    with TASK_RUNTIME_LOCK:
+        current = store.get_task(task_id) or {}
+        if current.get("status") not in ("queued", "processing"):
+            return current
+        return store.update_task(task_id, **changes)
+
+
+def _cleanup_reclaimed_chromium(task_id: str, runtime: dict | None):
+    """The worker owns its page; once it exits, stop Chromium only if idle globally."""
+    if not runtime or not runtime.get("reclaimed"):
+        return
+    with TASK_RUNTIME_LOCK:
+        no_task_workers = not TASK_RUNTIMES
+    with ACCOUNT_POOL.cond:
+        no_accounts = not ACCOUNT_POOL.busy_accounts
+    lock_busy = bool(getattr(GEN_LOCK, "locked", lambda: True)())
+    if no_task_workers and no_accounts and not lock_busy:
+        try:
+            engine.stop()
+            log.info("【卡死任务回收】task=%s 已无其他生成任务，Chromium 状态已清理", task_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("【卡死任务回收】task=%s 清理 Chromium 失败: %s", task_id, exc)
+    else:
+        log.info("【卡死任务回收】task=%s 已释放当前页面/上下文；仍有其他任务，暂不重启 Chromium", task_id)
+
+
+def _reclaim_stale_tasks(now: float | None = None) -> int:
+    """Cancel over-age image/video workers and leave a durable terminal record."""
+    now = time.time() if now is None else now
+    timeout = max(60, int(getattr(CFG, "stale_task_timeout", 900)))
+    reclaimed = 0
+    for task in list(store.tasks.values()):
+        if task.get("kind") not in ("image", "video"):
+            continue
+        if task.get("status") not in ("queued", "processing"):
+            continue
+        anchor = task.get("started_at") if task.get("status") == "processing" else None
+        anchor = anchor or task.get("updated_at") or task.get("created_at")
+        try:
+            age = now - float(anchor)
+        except (TypeError, ValueError):
+            continue
+        if age < timeout:
+            continue
+        task_id = task["id"]
+        with TASK_RUNTIME_LOCK:
+            current = store.get_task(task_id) or {}
+            if current.get("status") not in ("queued", "processing"):
+                continue
+            runtime = TASK_RUNTIMES.get(task_id)
+            if runtime and runtime.get("reclaimed"):
+                continue
+            if runtime:
+                runtime["reclaimed"] = True
+            message = _task_reclaim_message(timeout)
+            updated = store.update_task(task_id, status="failed", progress=0,
+                                        error=message, reclaimed_at=int(now),
+                                        reclaimed_after=int(age))
+            if runtime:
+                runtime["stop_event"].set()
+        if updated:
+            reclaimed += 1
+            log.warning("【卡死任务回收】task=%s kind=%s age=%ss；已发送取消信号并标记失败",
+                        task_id, task.get("kind"), int(age))
+    return reclaimed
+
+
+async def _stale_task_reaper_loop():
+    interval = max(5, int(getattr(CFG, "stale_task_reaper_interval", 15)))
+    log.info("【卡死任务回收守护进程】已启动，阈值=%ss，检测周期=%ss",
+             getattr(CFG, "stale_task_timeout", 900), interval)
+    while True:
+        try:
+            _reclaim_stale_tasks()
+        except Exception:  # noqa: BLE001
+            log.exception("【卡死任务回收守护进程】轮询异常")
+        await asyncio.sleep(interval)
 
 
 def _generation_busy() -> bool:
@@ -1146,20 +1259,34 @@ def _run_generation(prompt: str, kind: str, timeout: int,
                     account_id: str | None = None, on_progress=None,
                     reference_image: str | None = None,
                     reference_images: list[str] | None = None,
-                    on_acquired=None, on_account=None) -> tuple[dict, str | None]:
+                    on_acquired=None, on_account=None, stop_event=None) -> tuple[dict, str | None]:
     # Browser ownership covers account selection, retry and cleanup, not just generate().
     deadline = time.monotonic() + max(1, timeout)
-    if not GEN_LOCK.acquire(timeout=max(1, timeout)):
-        raise MuseGenerationError("等待浏览器队列超时，请稍后重试")
+    if stop_event is None:
+        if not GEN_LOCK.acquire(timeout=max(1, timeout)):
+            raise MuseGenerationError("等待浏览器队列超时，请稍后重试")
+    else:
+        while True:
+            if stop_event.is_set():
+                raise TaskReclaimedError(_task_reclaim_message(
+                    getattr(CFG, "stale_task_timeout", 900)))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise MuseGenerationError("等待浏览器队列超时，请稍后重试")
+            if GEN_LOCK.acquire(timeout=min(1.0, max(0.01, remaining))):
+                break
     try:
         if on_acquired:
             try:
                 on_acquired()
+            except TaskReclaimedError:
+                raise
             except Exception:
-                pass
+                log.exception("【生成】记录任务进入 processing 失败")
         return _run_generation_locked(prompt, kind, timeout, account_id,
                                       on_progress, reference_image, reference_images,
-                                      deadline=deadline, on_account=on_account)
+                                      deadline=deadline, on_account=on_account,
+                                      stop_event=stop_event)
     finally:
         GEN_LOCK.release()
 
@@ -1168,12 +1295,15 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
                     account_id: str | None = None, on_progress=None,
                     reference_image: str | None = None,
                     reference_images: list[str] | None = None,
-                    deadline=None, on_account=None) -> tuple[dict, str | None]:
+                    deadline=None, on_account=None, stop_event=None) -> tuple[dict, str | None]:
+    if stop_event is not None and stop_event.is_set():
+        raise TaskReclaimedError(_task_reclaim_message(
+            getattr(CFG, "stale_task_timeout", 900)))
     remaining_wait = int(deadline - time.monotonic()) if deadline is not None else timeout
     acc = ACCOUNT_POOL.acquire(account_id=account_id,
                                preferred_id=None,
                                rotate=True,
-                               timeout=max(1, remaining_wait))
+                               timeout=max(1, remaining_wait), stop_event=stop_event)
     if not acc:
         log.warning("【生成】没有取得可用账号 kind=%s requested_account=%s", kind, account_id)
         raise MuseGenerationError("没有可用账号，请先在管理页面导入 cookie")
@@ -1181,6 +1311,9 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
     last_exc = None
     try:
         for attempt in range(2):
+            if stop_event is not None and stop_event.is_set():
+                raise TaskReclaimedError(_task_reclaim_message(
+                    getattr(CFG, "stale_task_timeout", 900)))
             if deadline is not None and time.monotonic() >= deadline:
                 raise MuseGenerationError("任务总等待时限已到，停止重试")
             if attempt > 0:
@@ -1193,7 +1326,8 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
                 rem = int(deadline - time.monotonic()) if deadline is not None else timeout
                 if rem <= 0:
                     break
-                alt = ACCOUNT_POOL.acquire(rotate=True, force_rotate=True, timeout=rem)
+                alt = ACCOUNT_POOL.acquire(rotate=True, force_rotate=True, timeout=rem,
+                                           stop_event=stop_event)
                 if not alt or (old_id and alt["id"] == old_id):
                     if alt:
                         cur_acc = alt
@@ -1213,8 +1347,11 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
                 refreshed = _renew_and_persist(cur_acc["id"], wake_vm=True, force=(attempt > 0))
                 if refreshed:
                     cur_acc = refreshed
+                if stop_event is not None and stop_event.is_set():
+                    raise TaskReclaimedError(_task_reclaim_message(
+                        getattr(CFG, "stale_task_timeout", 900)))
                 log.info("【生成】kind=%s account=%s 开始启动浏览器生成", kind, cur_acc.get("id"))
-                engine.start()
+                engine.start(stop_event=stop_event)
                 remaining = int(deadline - time.monotonic()) if deadline is not None else timeout
                 if remaining <= 0:
                     raise MuseGenerationError("任务总等待时限已到，停止重试")
@@ -1224,10 +1361,13 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
                     reference_image = refs[0]
                 elif len(refs) > 1:
                     engine_kwargs["reference_images"] = refs
+                if stop_event is not None:
+                    engine_kwargs["stop_event"] = stop_event
                 res = engine.generate(cur_acc["cookies"], prompt, expect=kind,
                                       timeout=remaining, expires=cur_acc.get("cookies_exp"),
                                       account_id=cur_acc["id"], on_progress=on_progress,
-                                      reference_image=reference_image, **engine_kwargs)
+                                      reference_image=reference_image,
+                                      **engine_kwargs)
                 log.info("【生成】kind=%s account=%s 成功取回文件 filename=%s bytes=%s",
                          kind, cur_acc.get("id"), res.get("filename"), res.get("size"))
                 store.mark(cur_acc["id"], True, "")
@@ -1246,6 +1386,9 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
                 store.touch_keepalive(cur_acc["id"], None, f"代理异常: {str(exc)[:160]}")
                 engine.close_current_page()
             except MuseGenerationError as exc:
+                if stop_event is not None and stop_event.is_set():
+                    raise TaskReclaimedError(_task_reclaim_message(
+                        getattr(CFG, "stale_task_timeout", 900))) from exc
                 last_exc = exc
                 log.warning("【生成失败】kind=%s account=%s 阶段=Muse/浏览器 error=%s",
                             kind, cur_acc.get("id"), exc)
@@ -1265,6 +1408,9 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
                 last_exc = MuseGenerationError(f"生成失败: {exc}")
                 log.exception("【生成失败】kind=%s account=%s 阶段=未分类异常",
                               kind, cur_acc.get("id"))
+        if stop_event is not None and stop_event.is_set():
+            raise TaskReclaimedError(_task_reclaim_message(
+                getattr(CFG, "stale_task_timeout", 900)))
         raise last_exc
     finally:
         if cur_acc:
@@ -1388,11 +1534,20 @@ def _queue_image(req: ImageRequest, prompt: str, reference_images: list[str],
                           response_format=req.response_format, progress=0,
                           image_request_key=key_hash, image_request_hash=request_hash)
 
+    runtime = _register_task_runtime(tid, "image")
+
     def worker():
         timing = {"t0": time.time()}
         def _on_acquired():
+            if runtime["stop_event"].is_set():
+                raise TaskReclaimedError(_task_reclaim_message(
+                    getattr(CFG, "stale_task_timeout", 900)))
             timing["t0"] = time.time()
-            store.update_task(tid, status="processing", progress=5)
+            updated = _update_task_if_active(
+                tid, status="processing", progress=5, started_at=int(time.time()))
+            if not updated or updated.get("status") != "processing":
+                raise TaskReclaimedError(_task_reclaim_message(
+                    getattr(CFG, "stale_task_timeout", 900)))
         try:
             res, acc_id = _run_generation(
                 prompt, "image", req.timeout or CFG.image_timeout,
@@ -1400,22 +1555,28 @@ def _queue_image(req: ImageRequest, prompt: str, reference_images: list[str],
                 reference_images=reference_images,
                 on_progress=lambda p: store.update_task(tid, progress=p),
                 on_acquired=_on_acquired,
-                on_account=lambda account: _record_task_account(tid, account))
+                on_account=lambda account: _record_task_account(tid, account),
+                stop_event=runtime["stop_event"])
             # Store only media metadata, not large base64 payloads or reference credentials.
-            store.update_task(tid, status="completed", progress=100, account=acc_id,
-                              account_label=(store.get_account(acc_id) or {}).get("label"),
-                              elapsed=round(time.time() - timing["t0"], 1),
-                              url=media_url(res["filename"]),
-                              result={**{k: res[k] for k in ("filename", "size", "kind")},
-                                      "url": media_url(res["filename"])})
+            _update_task_if_active(
+                tid, status="completed", progress=100, account=acc_id,
+                account_label=(store.get_account(acc_id) or {}).get("label"),
+                elapsed=round(time.time() - timing["t0"], 1),
+                url=media_url(res["filename"]),
+                result={**{k: res[k] for k in ("filename", "size", "kind")},
+                        "url": media_url(res["filename"])})
         except Exception as exc:  # noqa: BLE001
             log.warning("【任务失败】task=%s kind=image account=%s label=%s error=%s",
                         tid, (store.get_task(tid) or {}).get("account"),
                         (store.get_task(tid) or {}).get("account_label"), exc)
-            store.update_task(tid, status="failed", error=str(exc),
-                              elapsed=round(time.time() - timing["t0"], 1))
+            _update_task_if_active(tid, status="failed", error=str(exc),
+                                   elapsed=round(time.time() - timing["t0"], 1))
+        finally:
+            finished_runtime = _unregister_task_runtime(tid)
+            _cleanup_reclaimed_chromium(tid, finished_runtime)
 
-    threading.Thread(target=worker, daemon=True).start()
+    task_thread = threading.Thread(target=worker, daemon=True, name=f"muse-task-{tid}")
+    task_thread.start()
     return JSONResponse(status_code=202, content={
         "id": tid, "task_id": tid, "object": "image.task", "status": "queued",
         "progress": 0, "created_at": task["created_at"]})
@@ -1580,35 +1741,51 @@ async def create_video(req: VideoRequest, _=Depends(auth)):
 
     store.update_task(task["id"], progress=10)
 
+    runtime = _register_task_runtime(task["id"], "video")
+
     def worker():
         timing = {"t0": time.time()}
         def _on_acquired():
+            if runtime["stop_event"].is_set():
+                raise TaskReclaimedError(_task_reclaim_message(
+                    getattr(CFG, "stale_task_timeout", 900)))
             timing["t0"] = time.time()
-            store.update_task(task["id"], status="processing", progress=15)
+            updated = _update_task_if_active(
+                task["id"], status="processing", progress=15,
+                started_at=int(time.time()))
+            if not updated or updated.get("status") != "processing":
+                raise TaskReclaimedError(_task_reclaim_message(
+                    getattr(CFG, "stale_task_timeout", 900)))
         try:
             def prog_cb(p):
                 store.update_task(task["id"], progress=p)
             res, acc_id = _run_generation(prompt, "video", timeout, on_progress=prog_cb,
                                           account_id=req.account_id,
                                           reference_images=ref_images, on_acquired=_on_acquired,
-                                          on_account=lambda account: _record_task_account(task["id"], account))
+                                          on_account=lambda account: _record_task_account(task["id"], account),
+                                          stop_event=runtime["stop_event"])
             vurl = media_url(res["filename"])
-            store.update_task(task["id"], status="completed", progress=100, account=acc_id,
-                              account_label=(store.get_account(acc_id) or {}).get("label"),
-                              elapsed=round(time.time() - timing["t0"], 1),
-                              url=vurl,
-                              video={"url": vurl},
-                              result={"url": vurl,
-                                      "filename": res["filename"],
-                                      "bytes": res["size"], "kind": res["kind"]})
+            _update_task_if_active(
+                task["id"], status="completed", progress=100, account=acc_id,
+                account_label=(store.get_account(acc_id) or {}).get("label"),
+                elapsed=round(time.time() - timing["t0"], 1),
+                url=vurl,
+                video={"url": vurl},
+                result={"url": vurl,
+                        "filename": res["filename"],
+                        "bytes": res["size"], "kind": res["kind"]})
         except Exception as exc:  # noqa: BLE001
             log.warning("【任务失败】task=%s kind=video account=%s label=%s error=%s",
                         task["id"], (store.get_task(task["id"]) or {}).get("account"),
                         (store.get_task(task["id"]) or {}).get("account_label"), exc)
-            store.update_task(task["id"], status="failed",
-                              elapsed=round(time.time() - timing["t0"], 1), error=str(exc))
+            _update_task_if_active(
+                task["id"], status="failed",
+                elapsed=round(time.time() - timing["t0"], 1), error=str(exc))
+        finally:
+            finished_runtime = _unregister_task_runtime(task["id"])
+            _cleanup_reclaimed_chromium(task["id"], finished_runtime)
 
-    threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=worker, daemon=True, name=f"muse-task-{task['id']}").start()
     return {"id": task["id"], "task_id": task["id"], "object": "video.task", "status": "queued",
             "progress": 10, "created_at": task["created_at"]}
 
@@ -3140,6 +3317,7 @@ async def _startup():
         _persist_env("MUSE2API_KEY", new_key)
         log.info("🔑 未检测到 MUSE2API_KEY，已自动生成初始密钥: %s", new_key)
     asyncio.create_task(_keepalive_loop())
+    asyncio.create_task(_stale_task_reaper_loop())
 
 
 @app.on_event("shutdown")

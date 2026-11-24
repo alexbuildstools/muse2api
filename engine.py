@@ -346,8 +346,10 @@ class MuseEngine:
     def _debug_url(self):
         return f"http://127.0.0.1:{self.cfg.cdp_port}/json/version"
 
-    def start(self):
+    def start(self, stop_event=None):
         with self._start_lock:
+            if stop_event is not None and stop_event.is_set():
+                raise MuseGenerationError("任务已被回收")
             if self.proc and self.proc.poll() is None and self.browser:
                 return
             env = dict(os.environ)
@@ -391,6 +393,8 @@ class MuseEngine:
                                          env=env, cwd=cwd_dir)
             last = None
             for _ in range(90):
+                if stop_event is not None and stop_event.is_set():
+                    raise MuseGenerationError("任务已被回收")
                 try:
                     v = http_json(self._debug_url(), timeout=2)
                     self.browser = CDP(v["webSocketDebuggerUrl"], timeout=180)
@@ -2192,13 +2196,21 @@ class MuseEngine:
         log.info("【引擎】开始生成 expect=%s account=%s refs=%s timeout=%ss",
                  expect, account_id, len(reference_images or ([] if not reference_image else [reference_image])), timeout)
         deadline = time.monotonic() + timeout
+        if stop_event is not None and stop_event.is_set():
+            raise MuseGenerationError("任务已被回收")
         self.ensure_page(cookies, expires, account_id=account_id)
+        if stop_event is not None and stop_event.is_set():
+            raise MuseGenerationError("任务已被回收")
         self.reset_thread(for_chat=False)
+        if stop_event is not None and stop_event.is_set():
+            raise MuseGenerationError("任务已被回收")
         self._scroll_bottom()
         refs = list(reference_images or ([] if not reference_image else [reference_image]))
         upload = self._attach_images(refs) if refs else None
         if not refs:
             self._clear_attachments()
+        if stop_event is not None and stop_event.is_set():
+            raise MuseGenerationError("任务已被回收")
         try:
             return self._generate_attached(prompt, expect, deadline, on_progress,
                                            stop_event, (upload or {}).get("hashes") or set())
@@ -2214,6 +2226,8 @@ class MuseEngine:
         baseline_src = base.get("src") or ""
         base_agent_cnt = self._agent_count()
         base_user_cnt = self._user_count()
+        if stop_event is not None and stop_event.is_set():
+            raise MuseGenerationError("任务已被回收")
         if time.monotonic() >= deadline:
             raise MuseGenerationError("任务准备超时，已停止发送")
         send_result = self._send(prompt)
