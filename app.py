@@ -1255,11 +1255,29 @@ def _is_prompt_delivery_failure(exc: BaseException) -> bool:
     ))
 
 
+def _is_account_retryable_failure(exc: BaseException) -> bool:
+    """Return whether a failed attempt points to the selected account.
+
+    Generic Muse generation failures, including timeouts and upstream delivery
+    failures, should not make a video task spend another full generation budget
+    on a different account. Authentication, proxy and explicit quota errors
+    can reasonably recover by switching accounts.
+    """
+    if isinstance(exc, (MuseAuthError, MuseProxyError)):
+        return True
+    return bool(re.search(
+        r"额度不足|额度已耗尽|all accounts.*quota|quota.*exhaust",
+        str(exc),
+        re.I,
+    ))
+
+
 def _run_generation(prompt: str, kind: str, timeout: int,
                     account_id: str | None = None, on_progress=None,
                     reference_image: str | None = None,
                     reference_images: list[str] | None = None,
-                    on_acquired=None, on_account=None, stop_event=None) -> tuple[dict, str | None]:
+                    on_acquired=None, on_account=None, stop_event=None,
+                    account_retry_only: bool = False) -> tuple[dict, str | None]:
     # Browser ownership covers account selection, retry and cleanup, not just generate().
     deadline = time.monotonic() + max(1, timeout)
     if stop_event is None:
@@ -1286,7 +1304,8 @@ def _run_generation(prompt: str, kind: str, timeout: int,
         return _run_generation_locked(prompt, kind, timeout, account_id,
                                       on_progress, reference_image, reference_images,
                                       deadline=deadline, on_account=on_account,
-                                      stop_event=stop_event)
+                                      stop_event=stop_event,
+                                      account_retry_only=account_retry_only)
     finally:
         GEN_LOCK.release()
 
@@ -1295,7 +1314,8 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
                     account_id: str | None = None, on_progress=None,
                     reference_image: str | None = None,
                     reference_images: list[str] | None = None,
-                    deadline=None, on_account=None, stop_event=None) -> tuple[dict, str | None]:
+                    deadline=None, on_account=None, stop_event=None,
+                    account_retry_only: bool = False) -> tuple[dict, str | None]:
     if stop_event is not None and stop_event.is_set():
         raise TaskReclaimedError(_task_reclaim_message(
             getattr(CFG, "stale_task_timeout", 900)))
@@ -1399,6 +1419,12 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
                         cur_acc.get("id"), exc,
                     )
                     break
+                if account_retry_only and not _is_account_retryable_failure(exc):
+                    log.warning(
+                        "普通生成失败，不切换账号重试（账号 %s）：%s",
+                        cur_acc.get("id"), exc,
+                    )
+                    break
                 try:
                     engine.reset_thread()
                 except Exception:
@@ -1408,6 +1434,8 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
                 last_exc = MuseGenerationError(f"生成失败: {exc}")
                 log.exception("【生成失败】kind=%s account=%s 阶段=未分类异常",
                               kind, cur_acc.get("id"))
+                if account_retry_only:
+                    break
         if stop_event is not None and stop_event.is_set():
             raise TaskReclaimedError(_task_reclaim_message(
                 getattr(CFG, "stale_task_timeout", 900)))
@@ -1763,7 +1791,8 @@ async def create_video(req: VideoRequest, _=Depends(auth)):
                                           account_id=req.account_id,
                                           reference_images=ref_images, on_acquired=_on_acquired,
                                           on_account=lambda account: _record_task_account(task["id"], account),
-                                          stop_event=runtime["stop_event"])
+                                          stop_event=runtime["stop_event"],
+                                          account_retry_only=True)
             vurl = media_url(res["filename"])
             _update_task_if_active(
                 task["id"], status="completed", progress=100, account=acc_id,
