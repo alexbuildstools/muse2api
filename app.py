@@ -1764,7 +1764,15 @@ async def create_video(req: VideoRequest, _=Depends(auth)):
 
     prompt = build_video_prompt(req, _reference_kinds(ref_images))
     timeout = req.timeout or CFG.video_timeout
-    task = store.create_task("video", req.prompt)
+    task = store.create_task_if_capacity(
+        "video", req.prompt, getattr(CFG, "max_pending_tasks", 8))
+    if task is None:
+        limit = getattr(CFG, "max_pending_tasks", 8)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Video queue is full ({limit} queued/processing tasks); retry later",
+            headers={"Retry-After": "15"},
+        )
     store.update_task(task["id"], api_prompt=prompt)
 
     store.update_task(task["id"], progress=10)

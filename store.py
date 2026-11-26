@@ -289,18 +289,36 @@ class Store:
     # ---------- 任务 ----------
     def create_task(self, kind: str, prompt: str) -> dict:
         with _LOCK:
-            tid = "task_" + uuid.uuid4().hex[:20]
-            t = {"id": tid, "object": "task", "kind": kind, "prompt": prompt,
-                 "status": "queued", "created_at": int(time.time()),
-                 "updated_at": int(time.time()), "result": None, "error": None,
-                 "started_at": None, "reclaimed_at": None,
-                 # The account is bound as soon as a worker acquires it.  Keeping
-                 # these fields on queued/failed tasks makes account-level failures
-                 # diagnosable instead of only showing the account on success.
-                 "account": None, "account_label": None, "account_attempts": []}
-            self.tasks[tid] = t
-            _write(self.cfg.tasks_file, self.tasks)
-            return t
+            return self._create_task_locked(kind, prompt)
+
+    def create_task_if_capacity(self, kind: str, prompt: str,
+                                max_pending: int) -> dict | None:
+        """Atomically admit a task only when its queued/processing capacity remains."""
+        with _LOCK:
+            if max_pending > 0:
+                pending = sum(
+                    task.get("kind") == kind
+                    and task.get("status") in ("queued", "processing")
+                    for task in self.tasks.values()
+                )
+                if pending >= max_pending:
+                    return None
+            return self._create_task_locked(kind, prompt)
+
+    def _create_task_locked(self, kind: str, prompt: str) -> dict:
+        tid = "task_" + uuid.uuid4().hex[:20]
+        now = int(time.time())
+        t = {"id": tid, "object": "task", "kind": kind, "prompt": prompt,
+             "status": "queued", "created_at": now,
+             "updated_at": now, "result": None, "error": None,
+             "started_at": None, "reclaimed_at": None,
+             # The account is bound as soon as a worker acquires it.  Keeping
+             # these fields on queued/failed tasks makes account-level failures
+             # diagnosable instead of only showing the account on success.
+             "account": None, "account_label": None, "account_attempts": []}
+        self.tasks[tid] = t
+        _write(self.cfg.tasks_file, self.tasks)
+        return t
 
     def update_task(self, tid: str, **kw):
         with _LOCK:

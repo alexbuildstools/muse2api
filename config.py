@@ -105,6 +105,10 @@ class Config:
     chat_poll_interval: float = field(
         default_factory=lambda: max(0.05, float(_env("MUSE2API_CHAT_POLL_INTERVAL", "0.12"))))
     max_concurrency: int = field(default_factory=lambda: max(1, int(_env("MUSE2API_CONCURRENCY", "8"))))
+    # 视频入口的准入上限；queued + processing 达到上限后直接返回 429。
+    # 设为 0 可关闭入口限制，但不建议在单浏览器实例上关闭。
+    max_pending_tasks: int = field(
+        default_factory=lambda: max(0, int(_env("MUSE2API_MAX_PENDING_TASKS", "8"))))
 
     # 异步图/视频任务的兜底回收。正常任务先按自身 timeout 结束；如果后台线程、
     # 页面或上游连接没有按预期退出，超过这个时间后由守护线程发出取消信号并清理状态。
