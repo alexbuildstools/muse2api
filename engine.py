@@ -39,6 +39,28 @@ from proxy import HTTPProxyRelay, request_proxy_context
 log = logging.getLogger("muse2api")
 
 ATT_SEL = '[data-testid^="hatch-chat-attachment-presentation-"]'
+
+# The chat surface is a nested scroll container.  Locate it once per page and
+# reuse it; the fallback full-DOM scan is only needed when the cached element
+# disappears or the page layout changes.
+_SCROLL_BOTTOM_BODY = (
+    "var el=window.__muse2api_scroll_el;"
+    "if(!el||!el.isConnected||el.scrollHeight<=el.clientHeight+100){"
+    "el=document.querySelector('[class*=\"chat-scroll\"],[class*=\"hatch-chat-scroll\"]');"
+    "if(!el||el.scrollHeight<=el.clientHeight+100){"
+    "var els=[].slice.call(document.querySelectorAll('*')).filter(function(e){"
+    "var s=getComputedStyle(e);"
+    "return(s.overflowY==='auto'||s.overflowY==='scroll')&&e.scrollHeight>e.clientHeight+100;});"
+    "els.sort(function(a,b){return b.scrollHeight-a.scrollHeight;});"
+    "el=els[0]||null;}"
+    "window.__muse2api_scroll_el=el;}"
+    "if(el)el.scrollTop=el.scrollHeight;"
+    "var s=document.scrollingElement||document.body;"
+    "s.scrollTop=s.scrollHeight;"
+    "var ta=document.querySelector('textarea');"
+    "if(ta)ta.scrollIntoView({block:'end'});"
+)
+_SCROLL_BOTTOM_JS = "(function(){" + _SCROLL_BOTTOM_BODY + "return 1;})()"
 # 参考素材上限对齐 muse.ai 网页端（maxFilesPerUpload=10 / maxFileSize=40 MiB /
 # maxVideoDurationSeconds=120）。常量名沿用 *_IMAGES，但统计的是全部素材。
 MAX_REFERENCE_IMAGES = 10
@@ -303,6 +325,7 @@ class MuseEngine:
         self._local = threading.local()
         self._start_lock = threading.Lock()
         self._active_contexts: set[str] = set()
+        self._context_targets: dict[str, str | None] = {}
         self._contexts_lock = threading.Lock()
         self._proxy_relays: set[HTTPProxyRelay] = set()
         self._download_dirs: set[str] = set()
@@ -409,17 +432,18 @@ class MuseEngine:
             self._close_page()
             if self.browser:
                 with self._contexts_lock:
-                    for ctx_id in list(self._active_contexts):
-                        try:
-                            self.browser.send("Target.disposeBrowserContext", {"browserContextId": ctx_id})
-                        except Exception:
-                            pass
-                    self._active_contexts.clear()
+                    context_ids = list(self._active_contexts)
+                for ctx_id in context_ids:
+                    self._dispose_context(ctx_id, "browser-stop")
                 try:
                     self.browser.close()
                 except Exception:
                     pass
                 self.browser = None
+            with self._contexts_lock:
+                # The browser is gone, so these IDs can no longer be retried.
+                self._active_contexts.clear()
+                self._context_targets.clear()
             if self.proc and self.proc.poll() is None:
                 self.proc.terminate()
                 try:
@@ -451,26 +475,59 @@ class MuseEngine:
             self._download_dirs.add(directory)
         return directory
 
+    def _dispose_context(self, ctx_id: str, reason: str,
+                         target_id: str | None = None) -> bool:
+        """Close a target and dispose its context; retain failed cleanup for stop()."""
+        if not ctx_id:
+            return True
+        with self._contexts_lock:
+            target_id = target_id or self._context_targets.get(ctx_id)
+        if not self.browser:
+            log.warning("无法销毁浏览器上下文：CDP 不可用 context=%s reason=%s", ctx_id, reason)
+            return False
+
+        if target_id:
+            try:
+                result = self.browser.send("Target.closeTarget", {"targetId": target_id}, timeout=5)
+                success = (result.get("result") or {}).get("success") if isinstance(result, dict) else None
+                if success is False:
+                    log.warning("closeTarget 返回失败 target=%s context=%s reason=%s",
+                                target_id, ctx_id, reason)
+            except Exception as exc:  # noqa: BLE001
+                # A page may already have disappeared; context disposal below is
+                # still useful and the failure remains visible in the log.
+                log.warning("closeTarget 失败 target=%s context=%s reason=%s err=%s",
+                            target_id, ctx_id, reason, exc)
+
+        try:
+            self.browser.send("Target.disposeBrowserContext", {"browserContextId": ctx_id}, timeout=5)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("disposeBrowserContext 失败 context=%s reason=%s err=%s",
+                        ctx_id, reason, exc)
+            return False
+
+        with self._contexts_lock:
+            self._active_contexts.discard(ctx_id)
+            self._context_targets.pop(ctx_id, None)
+        return True
+
     def _close_page(self):
-        """关闭当前线程专属的页面并销毁隔离的 BrowserContext，彻底释放内存与 Session。"""
+        """关闭当前线程页面、target 和隔离上下文；失败必须可见。"""
+        local = self._ensure_local()
         p = self.page
         ctx_id = self.current_context_id
+        target_id = getattr(local, "target_id", None)
         if p:
             try:
                 p.close()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                log.warning("页面 websocket 关闭失败 target=%s err=%s", target_id, exc)
             self.page = None
-        if ctx_id and self.browser:
-            try:
-                self.browser.send("Target.disposeBrowserContext", {"browserContextId": ctx_id})
-            except Exception:
-                pass
-            with self._contexts_lock:
-                self._active_contexts.discard(ctx_id)
+        if ctx_id:
+            self._dispose_context(ctx_id, "request-end", target_id=target_id)
             self.current_context_id = None
+        local.target_id = None
         self.current_acc_id = None
-        local = self._ensure_local()
         relay = getattr(local, "proxy_relay", None)
         if relay:
             relay.close()
@@ -509,12 +566,16 @@ class MuseEngine:
             self.current_context_id = ctx_id
             with self._contexts_lock:
                 self._active_contexts.add(ctx_id)
+                self._context_targets[ctx_id] = None
             t_res = self.browser.send("Target.createTarget", {
                 "url": "about:blank", "browserContextId": ctx_id,
             })
             target_id = t_res.get("result", {}).get("targetId")
             if not target_id:
                 raise MuseGenerationError("Chromium 未返回独立页面 ID")
+            self._ensure_local().target_id = target_id
+            with self._contexts_lock:
+                self._context_targets[ctx_id] = target_id
             ws_url = f"ws://127.0.0.1:{self.cfg.cdp_port}/devtools/page/{target_id}"
             page = CDP(ws_url, timeout=180)
             page.send("Network.enable")
@@ -525,12 +586,14 @@ class MuseEngine:
                 "browserContextId": ctx_id,
             })
             return page
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
             if page:
                 try:
                     page.close()
-                except Exception:
-                    pass
+                except Exception as close_exc:  # noqa: BLE001
+                    log.warning("创建页面失败后的 websocket 关闭失败: %s", close_exc)
+            log.warning("创建独立浏览器会话失败 context=%s target=%s err=%s",
+                        self.current_context_id, getattr(self._ensure_local(), "target_id", None), exc)
             self._close_page()
             error = MuseProxyError if proxy else MuseGenerationError
             raise error("无法创建该账号的独立浏览器会话；未回退共享标签页或直连") from None
@@ -1483,18 +1546,7 @@ class MuseEngine:
         """滚到聊天底部。muse.ai 的聊天滚动容器是内层 div（不是 document），
         虚拟列表按滚动位置渲染节点 —— 不滚到底，新消息根本不在 DOM 里。"""
         try:
-            self.page.js(
-                "(function(){"
-                "var els=[...document.querySelectorAll('*')].filter(function(e){"
-                "var s=getComputedStyle(e);"
-                "return (s.overflowY==='auto'||s.overflowY==='scroll')"
-                "&&e.scrollHeight>e.clientHeight+100;});"
-                "els.sort(function(a,b){return b.scrollHeight-a.scrollHeight;});"
-                "if(els[0])els[0].scrollTop=els[0].scrollHeight;"
-                "var s=document.scrollingElement||document.body;"
-                "s.scrollTop=s.scrollHeight;"
-                "var el=document.querySelector('textarea');"
-                "if(el)el.scrollIntoView({block:'end'});return 1;})()")
+            self.page.js(_SCROLL_BOTTOM_JS)
         except Exception:  # noqa: BLE001
             pass
 
@@ -1793,11 +1845,7 @@ class MuseEngine:
     )
     _POLL_CHAT_JS = (
         "(function(){"
-        "var els=[...document.querySelectorAll('*')].filter(function(e){"
-        "var s=getComputedStyle(e);"
-        "return (s.overflowY==='auto'||s.overflowY==='scroll')&&e.scrollHeight>e.clientHeight+100;});"
-        "els.sort(function(a,b){return b.scrollHeight-a.scrollHeight;});"
-        "if(els[0])els[0].scrollTop=els[0].scrollHeight;"
+        + _SCROLL_BOTTOM_BODY +
         "var scope=document.querySelector('main,[class*=\"chat-scroll\"],[class*=\"hatch-chat-scroll\"]')||document.body;"
         "var bs=[].slice.call(scope.querySelectorAll('div[class*=\"hatch-chat-groupable-bubble\"]'))"
         ".filter(function(b){return /hatch-agent-bubble-bg/.test(b.className||'');});"
@@ -1858,7 +1906,7 @@ class MuseEngine:
         while time.time() < first_token_deadline:
             if stop_event is not None and stop_event.is_set():
                 return
-            time.sleep(0.06)
+            time.sleep(getattr(self.cfg, "chat_poll_interval", 0.12))
             cnt, cur, has_stop = self._poll_chat()
             if not cur or (cnt <= base_agent and cur == base_text):
                 if time.time() - t_sent > 14.0:
@@ -1885,7 +1933,7 @@ class MuseEngine:
         while time.time() < deadline:
             if stop_event is not None and stop_event.is_set():
                 return
-            time.sleep(0.06)
+            time.sleep(getattr(self.cfg, "chat_poll_interval", 0.12))
             cnt, cur, has_stop = self._poll_chat()
             if not cur:
                 continue

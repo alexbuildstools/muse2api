@@ -20,7 +20,9 @@ class Browser:
     def __init__(self):
         self.lock = threading.Lock()
         self.next_id = 0
-    def send(self, method, params=None):
+        self.calls = []
+    def send(self, method, params=None, **kwargs):
+        self.calls.append((method, params or {}))
         if method == "Target.createBrowserContext":
             with self.lock:
                 self.next_id += 1
@@ -76,6 +78,8 @@ with tempfile.TemporaryDirectory(prefix="muse-download-fixture-") as home:
     assert result[0][0] != result[1][0], result
     assert result[0][1] != result[1][1], result
     assert not e._active_contexts and not e._download_dirs
+    assert sum(1 for method, _ in e.browser.calls if method == "Target.closeTarget") == 2
+    assert sum(1 for method, _ in e.browser.calls if method == "Target.disposeBrowserContext") == 2
 
     for proxied in (False, True):
         e.browser = SimpleNamespace(send=lambda *args, **kwargs: {"error": {"message": "fixture"}})
@@ -88,5 +92,18 @@ with tempfile.TemporaryDirectory(prefix="muse-download-fixture-") as home:
                 raise AssertionError("missing context id must fail closed")
             direct.assert_not_called()
         assert not e._active_contexts and not e._download_dirs and not e._proxy_relays
+
+    class FailingDisposeBrowser:
+        def send(self, method, params=None, **kwargs):
+            if method == "Target.disposeBrowserContext":
+                raise RuntimeError("dispose failed")
+            return {"result": {"success": True}}
+
+    e.browser = FailingDisposeBrowser()
+    e._active_contexts.add("ctx-retained")
+    e._context_targets["ctx-retained"] = "target-retained"
+    assert not e._dispose_context("ctx-retained", "test")
+    assert "ctx-retained" in e._active_contexts
+    assert e._context_targets["ctx-retained"] == "target-retained"
 
 print("PASS: two context downloads isolated, cleaned, and context failure never falls back")

@@ -102,6 +102,8 @@ class Config:
     image_timeout: int = field(default_factory=lambda: int(_env("MUSE2API_IMAGE_TIMEOUT", "240")))
     video_timeout: int = field(default_factory=lambda: int(_env("MUSE2API_VIDEO_TIMEOUT", "600")))
     chat_timeout: int = field(default_factory=lambda: int(_env("MUSE2API_CHAT_TIMEOUT", "300")))
+    chat_poll_interval: float = field(
+        default_factory=lambda: max(0.05, float(_env("MUSE2API_CHAT_POLL_INTERVAL", "0.12"))))
     max_concurrency: int = field(default_factory=lambda: max(1, int(_env("MUSE2API_CONCURRENCY", "8"))))
 
     # 异步图/视频任务的兜底回收。正常任务先按自身 timeout 结束；如果后台线程、
